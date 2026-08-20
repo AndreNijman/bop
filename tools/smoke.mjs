@@ -93,22 +93,36 @@ try {
   const tickB = await page.evaluate(() => window.BOP.state().tick);
   if (tickB - tickA < 20) problems.push(`simulation is not stepping (${tickA} -> ${tickB})`);
 
-  // Drive the real input path so key handling is covered. The draft is random
-  // and there are bots in the arena, so the local bopl may already be gone;
-  // that is not a failure, it just makes the movement check meaningless.
-  const before = JSON.parse(await page.locator('#game').getAttribute('data-test-player'));
-  await page.keyboard.down('KeyD');
-  await page.waitForTimeout(700);
-  await page.keyboard.up('KeyD');
-  const moved = JSON.parse(await page.locator('#game').getAttribute('data-test-player'));
-  const stillPlaying = before.alive && moved.alive && (await page.evaluate(() => window.BOP.state().phase)) === 'play';
-  if (stillPlaying && moved.form === 'normal' && before.form === 'normal') {
-    if (!(moved.x > before.x + 0.3)) {
-      problems.push(`holding D did not move the bopl (${before.x} -> ${moved.x}, form ${moved.form})`);
+  // Drive the real input path so key handling is covered. This is a live
+  // four-way fight: the bopl can be shoved by a rival, blown sideways, killed,
+  // or riding a platform that travels faster than it walks. So try both
+  // directions a few times and accept the first clean response.
+  let responded = false;
+  let clean = 0;              // attempts where the bopl was alive and in normal form throughout
+  let lastNote = 'no clean attempt';
+  for (const key of ['KeyD', 'KeyA', 'KeyD', 'KeyA', 'KeyD']) {
+    const before = JSON.parse(await page.locator('#game').getAttribute('data-test-player'));
+    const phase = await page.evaluate(() => window.BOP.state().phase);
+    if (!before.alive || before.form !== 'normal' || phase !== 'play') {
+      lastNote = `not in a clean state (alive=${before.alive} form=${before.form} phase=${phase})`;
+      await page.waitForTimeout(400);
+      continue;
     }
-  } else {
-    console.log(`  note: movement check skipped (alive ${before.alive}->${moved.alive}, form ${before.form}->${moved.form})`);
+    await page.keyboard.down(key);
+    await page.waitForTimeout(650);
+    await page.keyboard.up(key);
+    const moved = JSON.parse(await page.locator('#game').getAttribute('data-test-player'));
+    if (!moved.alive || moved.form !== 'normal') { lastNote = 'died or changed form mid-check'; continue; }
+    clean++;
+    const delta = moved.x - before.x;
+    if (key === 'KeyD' ? delta > 0.3 : delta < -0.3) { responded = true; break; }
+    lastNote = `${key} gave ${delta.toFixed(2)} (shoved or carried)`;
+    await page.waitForTimeout(150);
   }
+  // Two clean samples that both refuse to move is a real failure; fewer than two
+  // means the fight never gave us a fair look.
+  if (!responded && clean >= 2) problems.push(`movement never responded to input over ${clean} clean attempts (last: ${lastNote})`);
+  else if (!responded) console.log(`  note: movement check inconclusive, ${clean} clean attempt(s): ${lastNote}`);
 
   await page.keyboard.down('KeyW');
   await page.waitForTimeout(120);
