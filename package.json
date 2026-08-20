@@ -1,5 +1,5 @@
 {
-  "name": "squish",
+  "name": "bop",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
     "balance": "node tools/balance.mjs",
     "test": "node tools/smoke.mjs",
     "test:mp": "node tools/mp-smoke.mjs",
-    "test:mp:live": "BASE_URL=https://squish.andrenijman.com LIVE_RELAY=https://squish-relay.tung-tung-tung-sahur.workers.dev node tools/mp-smoke.mjs",
+    "test:mp:live": "BASE_URL=https://bop.andrenijman.com LIVE_RELAY=https://bop-relay.tung-tung-tung-sahur.workers.dev node tools/mp-smoke.mjs",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {

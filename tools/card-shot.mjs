@@ -29,6 +29,7 @@ try {
     await page.click('#play-offline');
     await page.locator('#draft .card').first().waitFor({ timeout: 10000 });
     await page.locator('#draft .card').first().click();
+    await page.locator('#draft .ready-loadout').click();
     await page.waitForFunction(() => window.BOP.state().phase === 'play', null, { timeout: 10000 });
     // Let the bots spread out and start throwing things around.
     await page.waitForTimeout(5200);

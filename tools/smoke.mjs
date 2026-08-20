@@ -15,6 +15,9 @@ const own = !process.argv.find(a => a.startsWith('http'));
 // how the guard hands back the game itself, which is what we want to drive.
 const url = new URL(target);
 url.searchParams.set('_games_frame', '1');
+// Keep practice opponents inert so movement and ability assertions are
+// deterministic instead of becoming optional when a bot lands an early kill.
+url.searchParams.set('calm', '1');
 const server = own ? spawn('npx', ['serve', '.', '-l', '4173'], { stdio: 'ignore' }) : null;
 
 async function ready(target) {
@@ -72,11 +75,14 @@ try {
   await page.fill('#player-name', 'Smoke');
   await page.click('#play-offline');
 
-  // Draft screen: three cards offered, click one.
+  // Ability select: all abilities plus Random are available, duplicates are
+  // legal, and the full three-slot loadout is confirmed before round one.
   await page.locator('#draft .card').first().waitFor({ state: 'visible', timeout: 8000 });
-  if (await page.locator('#draft-rows .draft-row').count() !== 1) problems.push('practice draft should show exactly one row');
-  if (await page.locator('#draft .card').count() !== 3) problems.push('draft did not offer three abilities');
-  await page.locator('#draft .card').first().click();
+  if (await page.locator('#draft-rows .draft-row').count() !== 1) problems.push('practice ability select should show exactly one row');
+  if (await page.locator('#draft .card').count() !== 30) problems.push('ability select did not offer 29 abilities plus Random');
+  if (await page.locator('#draft .held-slot').count() !== 3) problems.push('ability select is missing loadout slots');
+  for (let slot = 0; slot < 3; slot++) await page.locator('#draft .card[data-ability="dash"]').click();
+  await page.locator('#draft .ready-loadout').click();
 
   await page.waitForFunction(() => window.BOP.state().screen === 'play', null, { timeout: 8000 });
   await page.waitForFunction(() => window.BOP.state().phase === 'play', null, { timeout: 8000 });
@@ -92,6 +98,19 @@ try {
   await page.waitForTimeout(600);
   const tickB = await page.evaluate(() => window.BOP.state().tick);
   if (tickB - tickA < 20) problems.push(`simulation is not stepping (${tickA} -> ${tickB})`);
+
+  // Fire Dash before movement testing can carry the local bopl off an edge.
+  // Calm practice guarantees this assertion exercises the real input path.
+  await page.mouse.move(1000, 300);
+  await page.mouse.down();
+  await page.waitForTimeout(120);
+  await page.mouse.up();
+  await page.waitForTimeout(180);
+  const afterAbility = await page.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer));
+  const firedSlot = afterAbility.slots[0];
+  if (!firedSlot || (firedSlot.cd <= 0 && firedSlot.state !== 1 && afterAbility.form === 'normal')) {
+    problems.push(`ability ${firedSlot?.id} did not fire: ${JSON.stringify(firedSlot)}`);
+  }
 
   // Drive the real input path so key handling is covered. This is a live
   // four-way fight: the bopl can be shoved by a rival, blown sideways, killed,
@@ -123,39 +142,6 @@ try {
   // means the fight never gave us a fair look.
   if (!responded && clean >= 2) problems.push(`movement never responded to input over ${clean} clean attempts (last: ${lastNote})`);
   else if (!responded) console.log(`  note: movement check inconclusive, ${clean} clean attempt(s): ${lastNote}`);
-
-  await page.keyboard.down('KeyW');
-  await page.waitForTimeout(120);
-  await page.keyboard.up('KeyW');
-  await page.waitForTimeout(200);
-
-  // Fire the first ability with the mouse. Engine, Spike, Tesla Coil, Throw and
-  // Push are placement abilities that correctly do nothing unless the bopl is
-  // standing on terrain, so the check retries and takes footing into account.
-  const PLACEMENT = new Set(['engine', 'spike', 'tesla', 'throw', 'push']);
-  let after = await page.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer));
-  let fired = false;
-  let everGrounded = false;
-  for (let attempt = 0; attempt < 5 && !fired; attempt++) {
-    await page.mouse.move(1000, 300 + attempt * 20);
-    await page.mouse.down();
-    await page.waitForTimeout(900);
-    await page.mouse.up();
-    await page.waitForTimeout(250);
-    after = await page.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer));
-    if (!after.alive) break;
-    everGrounded = everGrounded || after.grounded;
-    const slot = after.slots[0];
-    fired = !!slot && (slot.cd > 0 || slot.state === 1 || after.form !== 'normal');
-  }
-  const slot = after.slots[0];
-  if (!after.alive) {
-    console.log('  note: the bots got us before the ability check, cooldown assertion skipped');
-  } else if (!fired && PLACEMENT.has(slot?.id) && !everGrounded) {
-    console.log(`  note: ${slot.id} needs footing and we never landed, assertion skipped`);
-  } else if (!fired) {
-    problems.push(`ability ${slot?.id} did not fire: ${JSON.stringify(slot)} grounded=${everGrounded}`);
-  }
 
   if (await page.locator('#game').getAttribute('data-render-error')) problems.push('renderer lost the local player');
 

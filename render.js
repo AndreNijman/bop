@@ -9,6 +9,17 @@
 import { THEMES, COLORS, ABILITY_BY_ID, clamp } from './data.js';
 
 const TAU = Math.PI * 2;
+const pickupIcons = new Map();
+
+function pickupIcon(id) {
+  let canvas = pickupIcons.get(id);
+  if (canvas) return canvas;
+  canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 72;
+  paintAbilityIcon(canvas, id, '#fff4bd');
+  pickupIcons.set(id, canvas);
+  return canvas;
+}
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
@@ -337,6 +348,22 @@ export function createRenderer(canvas) {
           ctx.arc(b.x, b.y - b.r * 0.9, b.r * 0.3, 0, TAU);
           ctx.fillStyle = '#ffe066'; ctx.fill();
         }
+        break;
+      }
+      case 'ability': {
+        const pulse = 1 + Math.sin(t * 5 + b.id) * 0.06;
+        ctx.save();
+        ctx.translate(b.x, b.y);
+        ctx.scale(pulse, pulse);
+        ctx.beginPath();
+        ctx.arc(0, 0, b.r * 1.18, 0, TAU);
+        ctx.fillStyle = 'rgba(35,30,49,0.9)';
+        ctx.fill();
+        ctx.strokeStyle = '#fff4bd';
+        ctx.lineWidth = 0.06;
+        ctx.stroke();
+        ctx.drawImage(pickupIcon(b.abilityId), -b.r * 0.78, -b.r * 0.78, b.r * 1.56, b.r * 1.56);
+        ctx.restore();
         break;
       }
       case 'missile': {
@@ -702,6 +729,35 @@ export function createRenderer(canvas) {
     }
     for (const p of world.players) drawPlayer(ctx, p, world, view);
 
+    // Bopl Battle exposes every loadout above its owner. Besides being useful
+    // counterplay, the shared background color makes teams readable at a glance.
+    for (const p of world.players) {
+      if (!p.alive || !p.slots.length || (p.invis > 0 && p.pid !== view.localPid) || p.hidden > 0) continue;
+      const color = COLORS[p.color % COLORS.length];
+      const size = 0.38;
+      const gap = 0.05;
+      const width = p.slots.length * size + (p.slots.length - 1) * gap;
+      const y = p.y - p.r - 0.72;
+      const busy = p.slots.some(slot => slot.state === 1);
+      for (let i = 0; i < p.slots.length; i++) {
+        const slot = p.slots[i];
+        const x = p.x - width / 2 + i * (size + gap);
+        ctx.fillStyle = color.body;
+        ctx.strokeStyle = color.dark;
+        ctx.lineWidth = 0.045;
+        ctx.beginPath();
+        ctx.roundRect(x, y, size, size, 0.07);
+        ctx.fill();
+        ctx.stroke();
+        if (slot.id) ctx.drawImage(pickupIcon(slot.id), x + 0.055, y + 0.055, size - 0.11, size - 0.11);
+        if (slot.cd > 0 || slot.used || (busy && slot.state !== 1)) {
+          const fraction = slot.used ? 1 : clamp(slot.cd / (ABILITY_BY_ID.get(slot.id)?.cd || 1), 0, 1);
+          ctx.fillStyle = 'rgba(22,20,30,0.68)';
+          ctx.fillRect(x, y + size * (1 - fraction), size, size * fraction);
+        }
+      }
+    }
+
     // Held object line for the magnet.
     for (const p of world.players) {
       if (!p.alive || p.heldId < 0) continue;
@@ -731,19 +787,20 @@ export function createRenderer(canvas) {
     for (const p of world.players) {
       if (!p.alive || (p.invis > 0 && p.pid !== view.localPid) || p.hidden > 0) continue;
       const color = COLORS[p.color % COLORS.length];
+      const labelY = p.y - p.r - (p.slots.length ? 1.02 : 0.44);
       if (p.pid === view.localPid) {
         ctx.beginPath();
-        ctx.moveTo(p.x, p.y - p.r - 0.28);
-        ctx.lineTo(p.x - 0.17, p.y - p.r - 0.58);
-        ctx.lineTo(p.x + 0.17, p.y - p.r - 0.58);
+        ctx.moveTo(p.x, labelY + 0.1);
+        ctx.lineTo(p.x - 0.17, labelY - 0.2);
+        ctx.lineTo(p.x + 0.17, labelY - 0.2);
         ctx.closePath();
         ctx.fillStyle = color.body;
         ctx.fill();
       } else if (view.showNames) {
         ctx.fillStyle = 'rgba(0,0,0,0.45)';
-        ctx.fillText(p.name, p.x, p.y - p.r - 0.44);
+        ctx.fillText(p.name, p.x, labelY + 0.04);
         ctx.fillStyle = color.body;
-        ctx.fillText(p.name, p.x, p.y - p.r - 0.48);
+        ctx.fillText(p.name, p.x, labelY);
       }
     }
 

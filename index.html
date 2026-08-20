@@ -4,16 +4,16 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>BOP — physics brawler with 29 abilities</title>
-<meta name="description" content="A browser physics brawler. Draft wild abilities between rounds, squish your friends off floating platforms, last bopl standing wins. Free, online multiplayer, no download." />
+<meta name="description" content="A browser physics brawler. Choose three wild abilities, cling to every side of floating platforms, and be the last bopl or team standing. Free online multiplayer." />
 <meta name="theme-color" content="#14111c" />
 <link rel="canonical" href="https://bop.andrenijman.com/" />
 <meta property="og:type" content="website" />
 <meta property="og:title" content="BOP — physics brawler with 29 abilities" />
-<meta property="og:description" content="Draft wild abilities between rounds and squish your friends off the map. Free browser multiplayer." />
+<meta property="og:description" content="Choose up to three wild abilities and squish your friends off floating platforms. Free browser multiplayer." />
 <meta property="og:url" content="https://bop.andrenijman.com/" />
 <meta property="og:image" content="https://bop.andrenijman.com/og-image.png" />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="stylesheet" href="style.css?v=20260820-1" />
+<link rel="stylesheet" href="style.css?v=20260820-3" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='34' r='24' fill='%23ff6b5e' stroke='%23c93f36' stroke-width='5'/%3E%3Ccircle cx='24' cy='28' r='7' fill='%23fff'/%3E%3Ccircle cx='42' cy='28' r='7' fill='%23fff'/%3E%3Ccircle cx='25' cy='29' r='3' fill='%231b1725'/%3E%3Ccircle cx='43' cy='29' r='3' fill='%231b1725'/%3E%3C/svg%3E" />
 </head>
 <body>
@@ -46,16 +46,16 @@
         <canvas id="brand-bopl" width="132" height="132" aria-hidden="true"></canvas>
         <div>
           <h1>BOP</h1>
-          <p class="tag">Squish your friends off a floating rock. 29 abilities, drafted one at a time.</p>
+          <p class="tag">Squish your friends off a floating rock. Choose up to three abilities and combine them your way.</p>
         </div>
       </div>
       <label class="field">
         <span>your name</span>
         <input id="player-name" maxlength="14" placeholder="bopl" autocomplete="off" />
       </label>
-      <div class="row">
-        <button id="play-offline" class="primary" type="button">Practice vs bots</button>
+      <div class="row main-actions">
         <button id="play-online" class="primary" type="button">Play online</button>
+        <button id="play-offline" class="secondary" type="button">Practice vs bots</button>
       </div>
       <div class="row">
         <button id="open-couch" class="ghost" type="button">Couch multiplayer</button>
@@ -81,12 +81,9 @@
           <form id="create-form" autocomplete="off">
             <label class="field"><span>lobby name</span><input id="room-name" maxlength="24" placeholder="rock bottom" required /></label>
             <label class="field"><span>password (optional)</span><input id="room-password" maxlength="32" type="password" /></label>
-            <div class="grid3">
+            <div class="grid3 match-settings">
               <label class="field"><span>players</span>
-                <select id="room-max"><option>2</option><option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option></select>
-              </label>
-              <label class="field"><span>bots</span>
-                <select id="room-bots"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+                <select id="room-max"><option>2</option><option>3</option><option selected>4</option></select>
               </label>
               <label class="field"><span>wins</span>
                 <select id="room-wins"><option>3</option><option selected>5</option><option>7</option><option>10</option></select>
@@ -112,14 +109,16 @@
       </header>
       <p class="lede">Player one plays on the keyboard and mouse. Plug in gamepads for players two, three and four — they are picked up automatically.</p>
       <div id="pad-list" class="list"></div>
-      <div class="grid3">
+      <div class="grid3 match-settings">
         <label class="field"><span>humans</span><select id="couch-humans"></select></label>
-        <label class="field"><span>bots</span>
-          <select id="couch-bots"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
-        </label>
         <label class="field"><span>wins</span>
           <select id="couch-wins"><option>3</option><option selected>5</option><option>7</option><option>10</option></select>
         </label>
+      </div>
+      <div>
+        <h3>Player colors</h3>
+        <p class="fineprint team-note">Choose the same color to play as a team. Keep every color different for free-for-all.</p>
+        <div id="couch-colors" class="color-setup"></div>
       </div>
       <button id="couch-start" class="primary" type="button">Start</button>
     </section>
@@ -132,16 +131,14 @@
       <div class="split">
         <div class="panel">
           <h3>Bopls</h3>
+          <p class="fineprint team-note">Choose the same color to form a team. Unique colors play free-for-all.</p>
           <div id="roster" class="list"></div>
         </div>
         <div class="panel">
           <h3>Host settings</h3>
-          <div id="host-settings" class="grid3">
+          <div id="host-settings" class="grid3 match-settings">
             <label class="field"><span>players</span>
-              <select id="set-max"><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option></select>
-            </label>
-            <label class="field"><span>bots</span>
-              <select id="set-bots"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+              <select id="set-max"><option>2</option><option>3</option><option>4</option></select>
             </label>
             <label class="field"><span>wins</span>
               <select id="set-wins"><option>3</option><option>5</option><option>7</option><option>10</option></select>
@@ -158,7 +155,7 @@
 
     <section id="draft" class="screen" hidden>
       <header class="screen-head">
-        <h2>Round <span id="draft-round">1</span> — pick an ability</h2>
+        <h2 id="draft-title">Choose abilities</h2>
         <span id="draft-timer" class="chip"></span>
       </header>
       <div id="draft-rows"></div>
@@ -190,7 +187,7 @@
       </header>
       <div class="help-body">
         <h3>The round</h3>
-        <p>Every round starts with a draft: three abilities are offered, you keep one. You carry three at a time, so from the fourth round on you decide which one to throw away. Last bopl alive wins the round. First to the win target takes the match.</p>
+        <p>Choose up to three abilities before the match; clear a slot if you want fewer. Your build stays between rounds; after losing a round you may reopen ability select, while the winner keeps their build. A Random slot rolls a new ability each round. Matching colors are teammates. Last bopl or team alive wins the round. First to the win target takes the match.</p>
         <h3>Dying</h3>
         <p>There is no health bar. You die by leaving the arena, hitting the water, getting crushed between two solid things, being eaten by something two sizes bigger, or touching anything genuinely lethal — an arrow, a spike, a rolling player, a drill bit, an explosion.</p>
         <h3>Controls</h3>
@@ -207,7 +204,7 @@
         <h3>Reading the arena</h3>
         <p>Platforms with glowing yellow studs travel on a fixed path. Dashed outlines float free and can be shoved anywhere. Pale blue platforms are ice and give almost no grip. Space arenas have low gravity and no water to fall into. Terrain springs back toward where it started unless something cuts it loose.</p>
         <h3>Sudden death</h3>
-        <p>Two minutes in, the death barrier starts closing and the terrain begins to shrink. Nobody stalls forever.</p>
+        <p>Two minutes in, every platform starts moving in increasingly violent down-and-up waves until the stage is dragged into the void. Nobody stalls forever.</p>
       </div>
     </section>
 
@@ -216,6 +213,6 @@
   <div id="toast" role="status"></div>
 </main>
 
-<script type="module" src="game.js?v=20260820-1"></script>
+<script type="module" src="game.js?v=20260820-3"></script>
 </body>
 </html>

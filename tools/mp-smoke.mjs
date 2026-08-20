@@ -15,7 +15,7 @@ import { TUNE } from '../data.js';
 const liveRelay = process.env.LIVE_RELAY;
 const relay = liveRelay || 'http://127.0.0.1:8787';
 const baseUrl = process.env.BASE_URL || 'http://127.0.0.1:4173';
-const CLIENTS = Number(process.env.CLIENTS || 4);
+const CLIENTS = Math.min(TUNE.maxPlayers, Number(process.env.CLIENTS || TUNE.maxPlayers));
 
 const processes = [];
 if (!process.env.BASE_URL) processes.push(spawn('npx', ['serve', '.', '-l', '4173'], { stdio: 'ignore' }));
@@ -47,6 +47,7 @@ try {
     const page = await context.newPage();
     page.on('pageerror', e => problems.push(`p${i} page error: ${e.message}`));
     page.on('console', m => { if (m.type() === 'error') problems.push(`p${i} console: ${m.text()}`); });
+    page.on('requestfailed', request => problems.push(`p${i} request failed: ${request.url()} (${request.failure()?.errorText || 'unknown'})`));
     const gameUrl = `${baseUrl}/?_games_frame=1&relay=${encodeURIComponent(relay)}`;
     await page.goto(gameUrl);
     if (await page.locator('.skip button').count()) {
@@ -60,13 +61,12 @@ try {
   }
   const [host, ...guests] = pages;
 
-  // Host creates a locked lobby with one bot.
+  // Host creates a locked vanilla-size lobby. Bopl Battle has no bots.
   await host.fill('#player-name', 'Host');
   await host.click('#play-online');
   await host.fill('#room-name', room);
   await host.fill('#room-password', 'hunter2');
   await host.selectOption('#room-max', String(CLIENTS));
-  await host.selectOption('#room-bots', '1');
   await host.selectOption('#room-wins', '3');
   await host.click('#create-form button[type=submit]');
   try {
@@ -75,6 +75,7 @@ try {
     const why = (await host.locator('#online-error').textContent()) || '(no message)';
     throw new Error(`host could not create the lobby: ${why.trim()}`);
   }
+  if (!(await host.locator('#start-match').isDisabled())) problems.push('host could start without an opponent');
 
   // A wrong password must be refused.
   const intruder = guests[0];
@@ -116,25 +117,45 @@ try {
     }
   }
 
-  // Roster must agree across every client: humans plus the bot, except the bot
-  // gets dropped when the humans already fill the eight player cap.
-  const expected = Math.min(CLIENTS + 1, TUNE.maxPlayers);
+  // Roster must agree across every client.
+  const expected = CLIENTS;
   for (const page of pages) {
     await page.waitForFunction(n => document.querySelectorAll('#roster .roster-row').length === n, expected, { timeout: 15000 })
       .catch(() => problems.push('roster never reached the expected size on every client'));
+  }
+
+  // Team membership comes from color choice. Matching colors form a team;
+  // unique colors remain free-for-all, with no separate team preset.
+  for (let i = 0; i < pages.length; i++) {
+    await pages[i].locator(`.roster-row.you .color-choice[data-color="${i % 2}"]`).click();
+  }
+  for (const page of pages) {
+    await page.waitForFunction(expectedTeams => {
+      const roster = window.BOP.state().roster;
+      return roster.length === expectedTeams.length && roster.every((player, index) => player.team === expectedTeams[index]);
+    }, pages.map((_, index) => index % 2), { timeout: 10000 }).catch(() => problems.push('same-color team selection did not synchronize'));
   }
 
   // Only the host can start.
   if (!(await guests[0].locator('#start-match').isDisabled())) problems.push('a non-host could start the match');
   await host.click('#start-match');
 
-  // Draft appears for everyone, offering three abilities each.
+  // Ability select appears for everyone with three editable slots and the full
+  // catalogue. Each client confirms a complete build before the round begins.
   for (const page of pages) {
     await page.locator('#draft .card').first().waitFor({ state: 'visible', timeout: 15000 });
-    if (await page.locator('#draft .card').count() !== 3) problems.push('a client was not offered three abilities');
-    if (await page.locator('#draft-rows .draft-row').count() !== 1) problems.push('online draft showed more than one row');
+    if (await page.locator('#draft .card').count() !== 30) problems.push('a client did not receive the full ability catalogue plus Random');
+    if (await page.locator('#draft .held-slot').count() !== 3) problems.push('online ability select is missing loadout slots');
+    if (await page.locator('#draft-rows .draft-row').count() !== 1) problems.push('online ability select showed more than one local row');
   }
-  for (const page of pages) await page.locator('#draft .card').first().click();
+  for (let i = 0; i < pages.length; i++) {
+    if (i === 0) {
+      for (let slot = 0; slot < 3; slot++) await pages[i].locator('#draft .card[data-ability="dash"]').click();
+    } else if (i === 1) {
+      await pages[i].locator('#draft .clear-slot').click();
+    } else await pages[i].locator('#draft .card').nth(i + 1).click();
+    await pages[i].locator('#draft .ready-loadout').click();
+  }
 
   // Round begins on every client with the same seed and arena.
   for (const page of pages) {
@@ -142,6 +163,10 @@ try {
     await page.waitForFunction(() => window.BOP.state().phase === 'play', null, { timeout: 15000 });
   }
   const states = await Promise.all(pages.map(p => p.evaluate(() => window.BOP.state())));
+  const hostLoadout = states[0].roster.find(player => player.pid === states[0].you)?.abilities;
+  if (hostLoadout?.join(',') !== 'dash,dash,dash') problems.push(`duplicate loadout did not survive the relay: ${hostLoadout}`);
+  const emptyLoadout = states[1].roster.find(player => player.pid === states[1].you)?.abilities;
+  if (emptyLoadout?.[0] !== '') problems.push(`empty ability slot did not survive the relay: ${emptyLoadout}`);
   const alive = states.map(s => s.alive);
   if (new Set(alive).size !== 1) problems.push(`clients disagree on who is alive: ${alive.join(', ')}`);
   if (alive[0] !== expected) problems.push(`expected ${expected} bopls in the round, saw ${alive[0]}`);
@@ -152,6 +177,11 @@ try {
   }
   const pids = states.map(s => s.you);
   if (new Set(pids).size !== pids.length) problems.push(`the relay handed out duplicate player ids: ${pids.join(', ')}`);
+  const startedList = await host.evaluate(async relayBase => {
+    const response = await fetch(`${relayBase}/lobbies`, { cache: 'no-store' });
+    return (await response.json()).lobbies || [];
+  }, relay);
+  if (startedList.find(lobby => lobby.name === room)?.joinable) problems.push('started match remained joinable in the lobby directory');
 
   // Movement made on one client must be visible to the others: this is the real
   // test of the snapshot pipeline.
@@ -197,6 +227,12 @@ try {
   if (survived.screen !== 'play') problems.push('the round ended when one client left');
 
   await host.screenshot({ path: '/tmp/opencode/bop-mp-smoke.png' });
+
+  // An online match cannot continue as an unsupported one-player game. Once
+  // every opponent leaves, the final client is returned to a fresh lobby.
+  for (const guest of guests.slice(0, -1)) await guest.close();
+  await host.waitForFunction(() => window.BOP.state().screen === 'lobby', null, { timeout: 10000 })
+    .catch(() => problems.push('last remaining online player was not returned to the lobby'));
 
   // Repository plumbing must not be readable from the real host. Only asserted
   // against production: locally this would be testing whether `npx serve` hands

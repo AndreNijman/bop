@@ -10,7 +10,7 @@
 //   GET /lobbies  - public lobby directory
 //   GET /ws?room= - websocket, first message must be create or join
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, MAPS, COLORS, BOT_NAMES } from './data.js';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js';
 import { createWorld, step, applyInput, snapshot } from './sim.js';
 import { createBrain, driveBot } from './bots.js';
 
@@ -60,7 +60,7 @@ function originAllowed(origin) {
   } catch { return false; }
 }
 
-// A tiny non-crypto PRNG for map and draft choices. Seeded per room so a replay
+// A tiny non-crypto PRNG for maps and Random slots. Seeded per room so a replay
 // of the same seed produces the same match.
 function rng(seed) {
   let s = (seed | 0) || 1;
@@ -98,7 +98,7 @@ export class LobbyRegistry {
       const lobbies = [];
       for (const [key, value] of entries) {
         if (!value.updated || now - value.updated > 90_000) { await this.ctx.storage.delete(key); continue; }
-        lobbies.push({ ...value, joinable: value.players < value.max });
+        lobbies.push({ ...value, joinable: value.phase === 'lobby' && value.players < value.max });
       }
       lobbies.sort((a, b) => (b.joinable - a.joinable) || (b.players - a.players) || (b.updated - a.updated));
       return json({ lobbies: lobbies.slice(0, 40) });
@@ -121,14 +121,15 @@ export class GameRoom {
     this.key = '';
     this.host = -1;
     this.password = '';
-    this.settings = { max: 6, bots: 3, wins: TUNE.winsToTake };
+    this.settings = { max: TUNE.maxPlayers, bots: 0, wins: TUNE.winsToTake };
     this.phase = 'lobby';             // lobby | draft | round | done
     this.round = 0;
+    this.lastWinner = -1;
+    this.lastWinnerTeam = -1;
     this.nextPid = 1;
     this.world = null;
     this.brains = new Map();
     this.sent = new Set();
-    this.offers = new Map();
     this.picks = new Map();
     this.deadline = 0;
     this.timer = null;
@@ -184,11 +185,12 @@ export class GameRoom {
     this.roster.clear();
     this.brains.clear();
     this.sent.clear();
-    this.offers.clear();
     this.picks.clear();
     this.world = null;
     this.phase = 'lobby';
     this.round = 0;
+    this.lastWinner = -1;
+    this.lastWinnerTeam = -1;
     this.host = -1;
     this.room = '';
     this.key = '';
@@ -209,47 +211,65 @@ export class GameRoom {
 
     switch (message.t) {
       case 'input': {
-        const player = this.world?.players.find(p => p.pid === session.pid);
-        if (player && this.phase === 'round') {
-          applyInput(player, {
+        const players = this.world?.players.filter(p => p.pid === session.pid) || [];
+        if (players.length && this.phase === 'round') {
+          const input = {
             mx: message.mx, jump: message.jump, ax: message.ax, ay: message.ay,
             ab: Array.isArray(message.ab) ? message.ab.slice(0, TUNE.slots) : [],
-          });
+          };
+          for (const player of players) applyInput(player, input);
         }
         return;
       }
       case 'start': {
         if (session.pid !== this.host || this.phase !== 'lobby') return;
+        const humans = [...this.roster.values()].filter(player => !player.bot);
+        if (humans.length < 2) {
+          this.send(session.socket, { t: 'err', m: 'at least two players are required' });
+          return;
+        }
+        if (new Set(humans.map(player => player.color)).size < 2) {
+          this.send(session.socket, { t: 'err', m: 'pick at least two colors before starting' });
+          return;
+        }
         this.beginMatch();
         return;
       }
-      case 'pick': {
+      case 'loadout': {
+        const allowed = new Set(['', ...SELECTABLE_ABILITIES.map(ability => ability.id)]);
+        const abilities = Array.isArray(message.abilities)
+          ? message.abilities.slice(0, TUNE.slots).map(id => String(id))
+          : [];
+        if (abilities.length !== TUNE.slots || abilities.some(id => !allowed.has(id))) return;
+        if (this.phase === 'round') {
+          if (this.world?.players.some(player => player.pid === session.pid && player.alive)) return;
+          record.pendingLoadout = abilities;
+          return;
+        }
         if (this.phase !== 'draft') return;
-        const offer = this.offers.get(session.pid);
-        const id = String(message.ability || '');
-        if (!offer || !offer.includes(id)) return;
-        const slot = clamp(Math.floor(Number(message.slot) || 0), 0, TUNE.slots - 1);
-        this.picks.set(session.pid, { ability: id, slot });
+        if (this.round > 0 && record.team === this.lastWinnerTeam) return;
+        this.picks.set(session.pid, abilities);
         this.broadcastDraft();
         if ([...this.roster.keys()].every(pid => this.picks.has(pid))) this.startRound();
         return;
       }
       case 'again': {
         if (session.pid !== this.host || this.phase !== 'done') return;
-        for (const record of this.roster.values()) { record.wins = 0; record.abilities = []; }
+        const humans = [...this.roster.values()].filter(player => !player.bot);
+        if (humans.length < 2 || new Set(humans.map(player => player.color)).size < 2) {
+          this.send(session.socket, { t: 'err', m: 'return to the lobby and wait for another team' });
+          return;
+        }
+        for (const record of this.roster.values()) { record.wins = 0; record.abilities = []; delete record.pendingLoadout; }
         this.round = 0;
+        this.lastWinner = -1;
+        this.lastWinnerTeam = -1;
         this.beginMatch();
         return;
       }
       case 'lobby': {
         if (session.pid !== this.host || this.phase === 'round') return;
-        this.phase = 'lobby';
-        this.world = null;
-        this.round = 0;
-        for (const record of this.roster.values()) { record.wins = 0; record.abilities = []; }
-        this.syncBots();
-        this.sendLobby();
-        this.syncRegistry();
+        this.returnToLobby();
         return;
       }
       case 'name': {
@@ -259,10 +279,21 @@ export class GameRoom {
       }
       case 'settings': {
         if (session.pid !== this.host || this.phase !== 'lobby') return;
-        this.settings.max = clamp(Math.round(Number(message.max) || this.settings.max), 2, TUNE.maxPlayers);
-        this.settings.bots = clamp(Math.round(Number(message.bots) ?? this.settings.bots), 0, TUNE.maxPlayers - 1);
+        const humans = [...this.roster.values()].filter(player => !player.bot).length;
+        this.settings.max = Math.max(humans, clamp(Math.round(Number(message.max) || this.settings.max), 2, TUNE.maxPlayers));
+        this.settings.bots = 0;
         this.settings.wins = clamp(Math.round(Number(message.wins) || this.settings.wins), 1, 15);
         this.syncBots();
+        this.sendLobby();
+        this.syncRegistry();
+        return;
+      }
+      case 'color': {
+        if (this.phase !== 'lobby') return;
+        const color = Math.floor(Number(message.color));
+        if (!Number.isFinite(color) || color < 0 || color >= COLORS.length) return;
+        record.color = color;
+        record.team = color;
         this.sendLobby();
         this.syncRegistry();
         return;
@@ -295,11 +326,12 @@ export class GameRoom {
       this.room = requested;
       this.key = key;
       this.password = await hash(message.password || '');
-      this.settings.max = clamp(Math.round(Number(message.settings?.max) || 6), 2, TUNE.maxPlayers);
-      this.settings.bots = clamp(Math.round(Number(message.settings?.bots) ?? 3), 0, TUNE.maxPlayers - 1);
+      this.settings.max = clamp(Math.round(Number(message.settings?.max) || TUNE.maxPlayers), 2, TUNE.maxPlayers);
+      this.settings.bots = 0;
       this.settings.wins = clamp(Math.round(Number(message.settings?.wins) || TUNE.winsToTake), 1, 15);
     } else {
       if (!this.roster.size || !this.key) { this.reject(session, 'no lobby has that name'); return; }
+      if (this.phase !== 'lobby') { this.reject(session, 'that match has already started'); return; }
       const humans = [...this.roster.values()].filter(r => !r.bot).length;
       if (humans >= this.settings.max) { this.reject(session, 'that lobby is full'); return; }
       if (this.password && !constantTimeEqual(this.password, await hash(message.password || ''))) {
@@ -314,7 +346,7 @@ export class GameRoom {
     while (used.has(color) && color < COLORS.length - 1) color++;
     const record = {
       pid, name: cleanName(message.name), color, bot: false, wins: 0,
-      abilities: [], joinedRound: this.round,
+      team: color, abilities: [], joinedRound: this.round,
     };
     this.roster.set(pid, record);
     session.pid = pid;
@@ -338,15 +370,18 @@ export class GameRoom {
     this.sessions.delete(session.socket);
     if (session.pid < 0) return;
     this.roster.delete(session.pid);
-    this.offers.delete(session.pid);
     this.picks.delete(session.pid);
     if (this.world) {
-      const player = this.world.players.find(p => p.pid === session.pid);
-      if (player) { player.alive = false; player.leftover = true; }
+      for (const player of this.world.players) {
+        if (player.pid !== session.pid) continue;
+        player.alive = false;
+        player.leftover = true;
+      }
     }
     const humans = [...this.roster.values()].filter(r => !r.bot);
     if (!humans.length) { this.reset(); return; }
     if (session.pid === this.host) this.host = humans[0].pid;
+    if (this.phase !== 'lobby' && humans.length < 2) { this.returnToLobby(); return; }
     this.syncBots();
     this.sendLobby();
     this.syncRegistry();
@@ -370,7 +405,7 @@ export class GameRoom {
       while (used.has(color) && color < COLORS.length - 1) color++;
       const record = {
         pid, name: BOT_NAMES[(pid * 5) % BOT_NAMES.length], color, bot: true, wins: 0,
-        abilities: [], joinedRound: this.round,
+        team: color, abilities: [], joinedRound: this.round,
       };
       this.roster.set(pid, record);
       bots.push(record);
@@ -382,7 +417,7 @@ export class GameRoom {
       t: 'lobby', room: this.room, host: this.host, phase: this.phase, round: this.round,
       settings: this.settings, max: TUNE.maxPlayers,
       players: [...this.roster.values()].map(r => ({
-        pid: r.pid, name: r.name, color: r.color, bot: r.bot, wins: r.wins, abilities: r.abilities,
+        pid: r.pid, name: r.name, color: r.color, team: r.team, bot: r.bot, wins: r.wins, abilities: r.abilities,
       })),
     });
   }
@@ -390,8 +425,9 @@ export class GameRoom {
   async syncRegistry() {
     if (!this.key) return;
     const humans = [...this.roster.values()].filter(r => !r.bot).length;
+    const colors = [...this.roster.values()].filter(record => !record.bot).map(record => record.color);
     const lobby = {
-      name: this.room, key: this.key, players: humans, bots: this.settings.bots,
+      name: this.room, key: this.key, players: humans, bots: 0, teams: new Set(colors).size < colors.length,
       max: this.settings.max, locked: !!this.password, phase: this.phase,
       round: this.round, wins: this.settings.wins, updated: Date.now(),
     };
@@ -409,8 +445,33 @@ export class GameRoom {
 
   // -- match flow ----------------------------------------------------------
 
+  returnToLobby() {
+    this.phase = 'lobby';
+    this.world = null;
+    this.round = 0;
+    this.lastWinner = -1;
+    this.lastWinnerTeam = -1;
+    this.picks.clear();
+    for (const record of this.roster.values()) {
+      record.wins = 0;
+      record.abilities = [];
+      record.team = record.color;
+      delete record.pendingLoadout;
+    }
+    this.syncBots();
+    this.sendLobby();
+    this.syncRegistry();
+  }
+
   beginMatch() {
     this.round = 0;
+    this.lastWinner = -1;
+    this.lastWinnerTeam = -1;
+    this.mapHistory = [];
+    for (const record of this.roster.values()) {
+      record.team = record.color;
+      delete record.pendingLoadout;
+    }
     for (const record of this.roster.values()) { record.wins = 0; record.abilities = []; }
     this.startDraft();
   }
@@ -418,21 +479,19 @@ export class GameRoom {
   startDraft() {
     this.phase = 'draft';
     this.world = null;
-    this.offers.clear();
     this.picks.clear();
-    const replacing = this.round >= TUNE.slots;
     for (const record of this.roster.values()) {
-      const pool = ABILITIES.map(a => a.id).filter(id => !record.abilities.includes(id));
-      const offer = [];
-      while (offer.length < 3 && pool.length) {
-        offer.push(pool.splice(Math.floor(this.rand() * pool.length) % pool.length, 1)[0]);
+      // The round winner keeps their build. Bots are a browser-only practice
+      // extension, so they also keep theirs rather than stalling selection.
+      if (record.pendingLoadout && record.team !== this.lastWinnerTeam) {
+        record.abilities = [...record.pendingLoadout];
+        this.picks.set(record.pid, [...record.pendingLoadout]);
+      } else if (record.bot || (this.round > 0 && record.team === this.lastWinnerTeam)) {
+        this.picks.set(record.pid, record.abilities.length
+          ? [...record.abilities]
+          : Array(TUNE.slots).fill('random'));
       }
-      this.offers.set(record.pid, offer);
-      if (record.bot) {
-        // Bots take the first offer and overwrite their least useful slot.
-        const slot = replacing ? Math.floor(this.rand() * TUNE.slots) % TUNE.slots : record.abilities.length;
-        this.picks.set(record.pid, { ability: offer[0], slot });
-      }
+      delete record.pendingLoadout;
     }
     this.deadline = Date.now() + TUNE.draftTime * 1000;
     this.broadcastDraft();
@@ -441,35 +500,38 @@ export class GameRoom {
   }
 
   broadcastDraft() {
-    const replacing = this.round >= TUNE.slots;
     for (const session of this.sessions.values()) {
       if (!session.ready) continue;
+      const record = this.roster.get(session.pid);
       this.send(session.socket, {
-        t: 'draft', round: this.round + 1, replacing,
+        t: 'draft', round: this.round + 1,
         left: Math.max(0, Math.round((this.deadline - Date.now()) / 1000)),
-        offer: this.offers.get(session.pid) || [],
-        held: this.roster.get(session.pid)?.abilities || [],
-        picked: this.picks.has(session.pid),
-        ready: [...this.picks.keys()],
-        players: [...this.roster.values()].map(r => ({ pid: r.pid, name: r.name, color: r.color, wins: r.wins, bot: r.bot })),
+        held: this.picks.get(session.pid) || record?.abilities || Array(TUNE.slots).fill('random'),
+        editable: this.round === 0 || record?.team !== this.lastWinnerTeam,
+        ready: this.picks.has(session.pid),
+        winner: this.lastWinner,
+        winnerTeam: this.lastWinnerTeam,
+        readyPlayers: [...this.picks.keys()],
+        players: [...this.roster.values()].map(r => ({ pid: r.pid, name: r.name, color: r.color, team: r.team, wins: r.wins, bot: r.bot })),
       });
     }
   }
 
   startRound() {
-    for (const [pid, pick] of this.picks) {
+    const humans = [...this.roster.values()].filter(record => !record.bot);
+    if (humans.length < 2 || new Set(humans.map(record => record.team)).size < 2) {
+      this.returnToLobby();
+      return;
+    }
+    for (const [pid, loadout] of this.picks) {
       const record = this.roster.get(pid);
       if (!record) continue;
-      const abilities = record.abilities.slice(0, TUNE.slots);
-      const slot = this.round < TUNE.slots ? Math.min(abilities.length, TUNE.slots - 1) : pick.slot;
-      abilities[slot] = pick.ability;
-      record.abilities = abilities.filter(Boolean).slice(0, TUNE.slots);
+      record.abilities = [...loadout].slice(0, TUNE.slots);
     }
-    // Anyone who never picked (disconnect, timeout) still gets something.
+    // Anyone who never readied keeps their current loadout. On the first round,
+    // that means Random in every slot.
     for (const record of this.roster.values()) {
-      if (record.abilities.length) continue;
-      const offer = this.offers.get(record.pid);
-      record.abilities = [offer ? offer[0] : 'dash'];
+      if (!record.abilities.length) record.abilities = Array(TUNE.slots).fill('random');
     }
 
     this.round++;
@@ -488,7 +550,10 @@ export class GameRoom {
     this.world = createWorld({
       seed: (this.seed ^ (this.round * 2654435761)) | 0,
       mapIndex,
-      players: roster.map(r => ({ pid: r.pid, name: r.name, color: r.color, abilities: r.abilities, bot: r.bot })),
+      players: roster.map(r => ({
+        pid: r.pid, name: r.name, color: r.color, team: r.team, bot: r.bot,
+        loadout: [...r.abilities], abilities: resolveLoadout(r.abilities, this.rand),
+      })),
     });
     this.brains.clear();
     for (const record of roster) if (record.bot) this.brains.set(record.pid, createBrain(record.pid * 31 + this.round));
@@ -508,7 +573,8 @@ export class GameRoom {
       round: this.round,
       wins: this.settings.wins,
       players: this.world.players.map(p => ({
-        pid: p.pid, name: p.name, color: p.color, abilities: p.slots.map(s => s.id), idx: p.idx,
+        pid: p.pid, name: p.name, color: p.color, team: p.team, abilities: p.slots.map(s => s.id), idx: p.idx,
+        loadout: this.roster.get(p.pid)?.abilities || [],
         wins: this.roster.get(p.pid)?.wins || 0,
       })),
     };
@@ -521,14 +587,24 @@ export class GameRoom {
 
   finishRound() {
     const winner = this.world.winner;
-    const record = winner >= 0 ? this.roster.get(winner) : null;
-    if (record) record.wins++;
-    const standings = [...this.roster.values()].map(r => ({ pid: r.pid, name: r.name, color: r.color, wins: r.wins, bot: r.bot }));
-    this.broadcast({ t: 'over', winner, standings, round: this.round });
-    if (record && record.wins >= this.settings.wins) {
+    const winningPlayer = this.world.players.find(player => player.pid === winner);
+    const winningTeam = winningPlayer?.team ?? -1;
+    for (const player of this.world.players) {
+      const roster = this.roster.get(player.pid);
+      if (roster && !player.clone && player.loadout) roster.abilities = [...player.loadout];
+    }
+    const winningRoster = [...this.roster.values()].filter(record => record.team === winningTeam);
+    const representative = winningRoster[0] || null;
+    const resultWinner = representative?.pid ?? winner;
+    this.lastWinner = resultWinner;
+    this.lastWinnerTeam = winningTeam;
+    if (winningTeam >= 0) for (const teammate of winningRoster) teammate.wins++;
+    const standings = [...this.roster.values()].map(r => ({ pid: r.pid, name: r.name, color: r.color, team: r.team, wins: r.wins, bot: r.bot }));
+    this.broadcast({ t: 'over', winner: resultWinner, standings, round: this.round });
+    if (representative && representative.wins >= this.settings.wins) {
       this.phase = 'done';
       this.world = null;
-      this.broadcast({ t: 'match', winner, standings });
+      this.broadcast({ t: 'match', winner: resultWinner, standings });
       this.syncRegistry();
       return;
     }
@@ -550,8 +626,9 @@ export class GameRoom {
       if (now >= this.deadline) {
         for (const record of this.roster.values()) {
           if (this.picks.has(record.pid)) continue;
-          const offer = this.offers.get(record.pid) || ['dash'];
-          this.picks.set(record.pid, { ability: offer[0], slot: Math.min(record.abilities.length, TUNE.slots - 1) });
+          this.picks.set(record.pid, record.abilities.length
+            ? [...record.abilities]
+            : Array(TUNE.slots).fill('random'));
         }
         this.startRound();
       } else if (this.tickCount++ % 60 === 0) this.broadcastDraft();
