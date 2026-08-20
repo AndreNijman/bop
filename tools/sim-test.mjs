@@ -63,6 +63,39 @@ check('loadouts preserve duplicates and intentional empty slots', () => {
   assert.equal(resolveLoadout([], () => 0.5).length, TUNE.slots, 'missing slots did not default to Random');
 });
 
+check('bots wait through the countdown and opening beat before attacking', () => {
+  const w = world([['dash'], []]);
+  const [bot, target] = w.players;
+  const brain = createBrain(32);
+  bot.x = 0; bot.y = 1;
+  target.x = 3; target.y = 1;
+  for (let i = 0; i < 180; i++) {
+    driveBot(w, bot, brain, TUNE.step);
+    assert.equal(bot.input.ab.some(Boolean), false, 'bot preloaded an ability during the countdown');
+  }
+  w.phase = 'play'; w.phaseT = 0;
+  for (let i = 0; i < Math.floor(1.7 / TUNE.step); i++) {
+    driveBot(w, bot, brain, TUNE.step);
+    assert.equal(bot.input.ab.some(Boolean), false, 'bot attacked in the opening grace period');
+  }
+});
+
+check('bots react to remembered positions instead of tracking every frame', () => {
+  const w = world([[], []]);
+  const [bot, target] = w.players;
+  const brain = createBrain(7);
+  w.phase = 'play'; w.phaseT = 0;
+  bot.x = 0; bot.y = 0;
+  target.x = 4; target.y = 0;
+  driveBot(w, bot, brain, TUNE.step);
+  assert.ok(bot.input.ax > 0.8, 'bot did not initially observe the target to its right');
+  target.x = -4;
+  driveBot(w, bot, brain, TUNE.step);
+  assert.ok(bot.input.ax > 0.8, 'bot reacted with frame-perfect aim');
+  for (let i = 0; i < Math.ceil(0.4 / TUNE.step); i++) driveBot(w, bot, brain, TUNE.step);
+  assert.ok(bot.input.ax < -0.8, 'bot never reacted to the target changing sides');
+});
+
 check('a bopl falls, lands and comes to rest on terrain', () => {
   const w = world();
   const p = w.players[0];

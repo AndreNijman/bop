@@ -13,6 +13,13 @@ const TAU = Math.PI * 2;
 
 function len(x, y) { return Math.sqrt(x * x + y * y); }
 
+function random(brain) {
+  brain.rng = (Math.imul(brain.rng, 1664525) + 1013904223) >>> 0;
+  return brain.rng / 4294967296;
+}
+
+function between(brain, min, max) { return min + (max - min) * random(brain); }
+
 // Launch direction for a projectile of a given speed under gravity, picking the
 // flatter of the two arcs. Falls back to a straight line when out of range.
 function ballistic(x, y, tx, ty, speed, grav) {
@@ -166,46 +173,127 @@ function sustain(w, p, ab, index, target, gap, threat, falling, brain, dt) {
 }
 
 export function createBrain(seed) {
-  return { commit: null, recovering: 0, t: 0, hold: [0, 0, 0], want: [0, 0, 0], jumpT: 0, wander: 0, dir: seed % 2 ? 1 : -1, panic: 0, seed };
+  const brain = {
+    commit: null, recovering: 0, t: 0, hold: [0, 0, 0], want: [0, 0, 0],
+    jumpT: 0, wander: 0, dir: seed % 2 ? 1 : -1, panic: 0, seed,
+    rng: (seed ^ 0x9e3779b9) >>> 0,
+    observeT: 0, targetId: -1, targetLock: 0, target: null, threat: null,
+    aimX: seed % 2 ? 1 : -1, aimY: 0, actionT: 0, pending: null, pauseT: 0,
+  };
+  // Stable differences make opponents feel like individuals without difficulty
+  // spikes: some react or attack a little sooner, others aim a little less well.
+  brain.engage = between(brain, 1.8, 2.8);
+  brain.reaction = between(brain, 0.2, 0.34);
+  brain.aimError = between(brain, 0.25, 0.7);
+  brain.actionDelay = between(brain, 1.2, 2);
+  brain.boldness = between(brain, 0.62, 0.88);
+  brain.ideal = between(brain, 3.4, 6.3);
+  return brain;
 }
 
 export function driveBot(w, p, brain, dt) {
   if (!p.alive) return;
-  brain.t += dt;
-
-  let target = null, bestD = Infinity;
-  for (const q of w.players) {
-    if (q === p || !q.alive) continue;
-    if (q.invis > 0 || q.hidden > 0) continue;
-    const d = len(q.x - p.x, q.y - p.y);
-    if (d < bestD) { bestD = d; target = q; }
+  if (w.phase !== 'play') {
+    brain.t = 0;
+    brain.observeT = 0;
+    brain.actionT = 0;
+    brain.pending = null;
+    brain.pauseT = 0;
+    brain.target = null;
+    brain.threat = null;
+    p.input.mx = 0;
+    p.input.my = 0;
+    p.input.jump = false;
+    p.input.ab.fill(false);
+    return;
   }
-  if (!target) {
-    for (const q of w.players) {
-      if (q === p || !q.alive) continue;
-      const d = len(q.x - p.x, q.y - p.y);
-      if (d < bestD) { bestD = d; target = q; }
+  brain.t += dt;
+  brain.observeT -= dt;
+  brain.targetLock -= dt;
+  brain.actionT = Math.max(0, brain.actionT - dt);
+  brain.pauseT = Math.max(0, brain.pauseT - dt);
+  if (brain.pending) brain.pending.t -= dt;
+
+  const observed = brain.observeT <= 0;
+  if (observed) {
+    brain.observeT = brain.reaction + between(brain, 0, 0.12);
+    let target = brain.targetLock > 0
+      ? w.players.find(q => q.id === brain.targetId && q.alive && q.pid !== p.pid && q.team !== p.team && q.invis <= 0 && q.hidden <= 0)
+      : null;
+    let bestD = target ? len(target.x - p.x, target.y - p.y) : Infinity;
+    if (!target) {
+      const options = [];
+      for (const q of w.players) {
+        if (!q.alive || q.pid === p.pid || q.team === p.team || q.invis > 0 || q.hidden > 0) continue;
+        const d = len(q.x - p.x, q.y - p.y);
+        options.push({ q, d });
+      }
+      options.sort((a, b) => a.d - b.d);
+      if (options.length) {
+        // Most people focus the nearest threat, but not every person picks the
+        // same opponent. An occasional alternate target prevents bot dog-piles.
+        const choice = options.length > 1 && random(brain) < 0.24
+          ? options[1 + Math.floor(random(brain) * (options.length - 1))]
+          : options[0];
+        target = choice.q;
+        bestD = choice.d;
+      }
+    }
+    if (target) {
+      if (brain.targetLock <= 0 || target.id !== brain.targetId) brain.targetLock = between(brain, 0.7, 1.6);
+      brain.targetId = target.id;
+      const angle = between(brain, 0, TAU);
+      const error = brain.aimError * between(brain, 0.35, 1);
+      brain.target = {
+        id: target.id,
+        x: target.x + Math.cos(angle) * error,
+        y: target.y + Math.sin(angle) * error,
+        vx: target.vx,
+        vy: target.vy,
+      };
+      const lead = between(brain, 0.08, 0.18);
+      const dx = brain.target.x + brain.target.vx * lead - p.x;
+      const dy = brain.target.y + brain.target.vy * lead - 0.15 - p.y;
+      const distance = len(dx, dy) || 1;
+      brain.aimX = dx / distance;
+      brain.aimY = dy / distance;
+    } else {
+      brain.targetId = -1;
+      brain.target = null;
+      brain.aimX = brain.dir;
+      brain.aimY = 0;
+    }
+    const threat = threatNear(w, p);
+    brain.threat = threat ? { x: threat.x, y: threat.y, vx: threat.vx || 0, vy: threat.vy || 0, kind: threat.kind } : null;
+    if (brain.t >= brain.engage && brain.pauseT <= 0 && random(brain) < 0.09) {
+      brain.pauseT = between(brain, 0.18, 0.5);
     }
   }
 
-  const threat = threatNear(w, p);
+  const target = brain.target;
+  const bestD = target ? len(target.x - p.x, target.y - p.y) : Infinity;
+  const threat = brain.threat;
+  p.input.ax = brain.aimX;
+  p.input.ay = brain.aimY;
+
   const scale = Math.max(0.4, w.bounds.x / 12.6);
   let moveX = 0;
   let wantJump = false;
 
-  if (target) aim(p, target.x + target.vx * 0.16, target.y + target.vy * 0.16 - 0.15);
-  else aim(p, p.x + brain.dir, p.y);
-
   // Piloting a live missile: climb clear of our own footing before turning it
   // on the target, the way a person sweeps it up and over.
-  for (const b of w.bodies) {
-    if (b.kind !== 'missile' || b.dead || b.owner !== p.pid || !b.guided) continue;
-    const age = w.t - b.spawn;
-    if (age < 0.42) {
-      const side = target ? Math.sign(target.x - p.x) || 1 : 1;
-      aim(p, p.x + side * 0.35, p.y - 3);
-    } else if (target) aim(p, target.x + target.vx * 0.2, target.y + target.vy * 0.2);
-    break;
+  if (observed) {
+    for (const b of w.bodies) {
+      if (b.kind !== 'missile' || b.dead || b.owner !== p.pid || !b.guided) continue;
+      const age = w.t - b.spawn;
+      if (age < 0.42) {
+        const side = target ? Math.sign(target.x - p.x) || 1 : 1;
+        aim(p, p.x + side * 0.35, p.y - 3);
+      } else if (target) aim(p, target.x + target.vx * 0.2, target.y + target.vy * 0.2);
+      brain.aimX = p.input.ax;
+      brain.aimY = p.input.ay;
+      break;
+    }
   }
 
   // Recover: if we are below every platform, get back up.
@@ -213,7 +301,11 @@ export function driveBot(w, p, brain, dt) {
   const drowning = w.water != null && p.y > w.water - 3.2 && !p.grounded;
   const outward = Math.abs(p.x) > w.bounds.x - 1.6;
 
-  if (target) {
+  if (brain.t < brain.engage) {
+    // People spend the opening beat orienting themselves instead of frame-one
+    // focus-firing the nearest spawn. Bots fan out during that same grace.
+    moveX = brain.dir;
+  } else if (target) {
     const gap = bestD;
     const ideal = brain.ideal || 4.2;
     if (gap > ideal + 1.2) moveX = target.x > p.x ? 1 : -1;
@@ -251,6 +343,10 @@ export function driveBot(w, p, brain, dt) {
     }
   } else brain.commit = null;
 
+  if (brain.pauseT > 0 && !threat && brain.recovering <= 0 && !brain.commit && !outward) {
+    moveX = 0;
+    wantJump = false;
+  }
   if (outward) moveX = p.x > 0 ? -1 : 1;
 
   // Edge safety on the ground: never stroll off unless the far side is real.
@@ -291,6 +387,8 @@ export function driveBot(w, p, brain, dt) {
 
   // Abilities.
   const gap = target ? bestD : 99;
+  const canAct = observed && brain.t >= brain.engage && brain.actionT <= 0 && (!brain.pending || brain.pending.t <= 0);
+  let acted = false;
   for (let i = 0; i < p.slots.length; i++) {
     const slot = p.slots[i];
     const ab = ABILITY_BY_ID.get(slot.id);
@@ -307,6 +405,7 @@ export function driveBot(w, p, brain, dt) {
       continue;
     }
     if (slot.cd > 0.01 || slot.state === 1) { p.input.ab[i] = false; continue; }
+    if (!canAct || acted || (brain.pending && brain.pending.slot !== i)) { p.input.ab[i] = false; continue; }
     let fire = false;
     let hold = 0;
     switch (ab.id) {
@@ -435,11 +534,30 @@ export function driveBot(w, p, brain, dt) {
       case 'blackhole': if (target && gap < 8 && gap > 2.4) fire = true; break;
     }
     if (fire) {
+      if (!brain.pending) {
+        brain.pending = { slot: i, t: between(brain, 0.25, 0.6) };
+        p.input.ab[i] = false;
+        acted = true;
+        continue;
+      }
+      brain.pending = null;
+      // A seen opening is not an automatic shot. This occasional hesitation is
+      // what keeps four bots from releasing perfect attacks in the same beat.
+      if (random(brain) > brain.boldness) {
+        brain.actionT = between(brain, 0.25, 0.65);
+        p.input.ab[i] = false;
+        acted = true;
+        continue;
+      }
       if (hold > 0) { brain.hold[i] = hold; p.input.ab[i] = true; }
       else p.input.ab[i] = true;
-    } else p.input.ab[i] = false;
+      brain.actionT = brain.actionDelay + between(brain, 0, 0.55);
+      acted = true;
+    } else {
+      if (brain.pending?.slot === i) { brain.pending = null; acted = true; }
+      p.input.ab[i] = false;
+    }
   }
-  brain.ideal = 3.4 + ((brain.seed * 37) % 30) / 10;
 }
 
 export function pickAbilities(rand, count, exclude = []) {

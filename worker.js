@@ -642,11 +642,18 @@ export class GameRoom {
     this.accumulator += elapsed / 1000;
     let steps = 0;
     while (this.accumulator >= TUNE.step && steps < 4) {
+      const shared = new Map();
       for (const player of this.world.players) {
         if (!player.bot || !player.alive) continue;
+        const input = shared.get(player.pid);
+        if (input) {
+          applyInput(player, input);
+          continue;
+        }
         let brain = this.brains.get(player.pid);
         if (!brain) { brain = createBrain(player.pid * 31 + this.round); this.brains.set(player.pid, brain); }
         driveBot(this.world, player, brain, TUNE.step);
+        shared.set(player.pid, { ...player.input, ab: [...player.input.ab] });
       }
       step(this.world, TUNE.step);
       this.accumulator -= TUNE.step;

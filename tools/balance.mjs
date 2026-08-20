@@ -16,7 +16,7 @@
 // to find outliers, not as a ladder.
 
 import { TUNE, ABILITIES, MAPS } from '../data.js';
-import { createWorld, step } from '../sim.js';
+import { createWorld, step, applyInput } from '../sim.js';
 import { createBrain, driveBot } from '../bots.js';
 
 const args = process.argv.slice(2);
@@ -33,31 +33,57 @@ const quiet = args.includes('--quiet');
 
 const pool = ABILITIES.map(a => a.id).filter(id => !only.length || only.includes(id));
 const stat = new Map(pool.map(id => [id, { id, rounds: 0, wins: 0, kills: 0, deaths: 0, draws: 0, timeouts: 0 }]));
+const durations = [];
+const firstDeaths = [];
 
 function playRound(seed, mapIndex, loadouts) {
   const w = createWorld({
     seed, mapIndex,
     players: loadouts.map((abilities, i) => ({ pid: i + 1, name: `B${i + 1}`, color: i, abilities, bot: true })),
   });
-  const brains = w.players.map((p, i) => createBrain(seed + i * 17 + 1));
+  const brains = new Map(w.players.map((p, i) => [p.pid, createBrain(seed + i * 17 + 1)]));
   // Bring sudden death forward so every sampled round resolves. Without this a
   // third of duels time out and the win rates stop meaning anything.
   w.t = Math.max(0, TUNE.roundTime - suddenAt);
   const limit = Math.round(maxSeconds / TUNE.step);
+  const startingPids = new Set(w.players.map(player => player.pid));
+  let firstDeath = null;
+  let activeSteps = 0;
   let steps = 0;
   while (w.phase !== 'over' && steps < limit) {
-    for (let i = 0; i < w.players.length; i++) driveBot(w, w.players[i], brains[i], TUNE.step);
+    const shared = new Map();
+    for (const player of w.players) {
+      if (!player.alive) continue;
+      const input = shared.get(player.pid);
+      if (input) {
+        applyInput(player, input);
+        continue;
+      }
+      let brain = brains.get(player.pid);
+      if (!brain) { brain = createBrain(seed + player.pid * 17 + 1); brains.set(player.pid, brain); }
+      driveBot(w, player, brain, TUNE.step);
+      shared.set(player.pid, { ...player.input, ab: [...player.input.ab] });
+    }
     step(w, TUNE.step);
     steps++;
+    if (w.phase === 'play') activeSteps++;
+    if (firstDeath === null && w.phase === 'play') {
+      const alivePids = new Set(w.players.filter(player => player.alive).map(player => player.pid));
+      if (alivePids.size < startingPids.size) firstDeath = activeSteps * TUNE.step;
+    }
   }
   return {
     winner: w.phase === 'over' ? w.winner : -1,
     timeout: w.phase !== 'over',
+    seconds: activeSteps * TUNE.step,
+    firstDeath: firstDeath ?? activeSteps * TUNE.step,
     players: w.players.map(p => ({ pid: p.pid, kills: p.kills, alive: p.alive })),
   };
 }
 
 function record(loadouts, result) {
+  durations.push(result.seconds);
+  firstDeaths.push(result.firstDeath);
   loadouts.forEach((abilities, index) => {
     const pid = index + 1;
     const player = result.players[index];
@@ -130,5 +156,23 @@ for (const row of rows) {
 const deviations = rows.map(r => Math.abs(r.win - expected));
 const spread = Math.max(...deviations);
 const mean = deviations.reduce((a, b) => a + b, 0) / deviations.length;
+durations.sort((a, b) => a - b);
+firstDeaths.sort((a, b) => a - b);
+const percentile = fraction => durations[Math.min(durations.length - 1, Math.floor(durations.length * fraction))] || 0;
+const deathPercentile = fraction => firstDeaths[Math.min(firstDeaths.length - 1, Math.floor(firstDeaths.length * fraction))] || 0;
+const shortRound = percentile(0.25);
+const earlyFirstDeath = deathPercentile(0.25);
+const medianRound = percentile(0.5);
+const medianFirstDeath = deathPercentile(0.5);
 console.log(`\n  worst deviation ${(spread * 100).toFixed(1)} points, mean ${(mean * 100).toFixed(1)}, ${(Date.now() - started) / 1000}s`);
+console.log(`  round length p25 ${shortRound.toFixed(1)}s, median ${medianRound.toFixed(1)}s, p75 ${percentile(0.75).toFixed(1)}s`);
+console.log(`  first elimination p25 ${earlyFirstDeath.toFixed(1)}s, median ${medianFirstDeath.toFixed(1)}s, p75 ${deathPercentile(0.75).toFixed(1)}s`);
 console.log(`  outliers: ${rows.filter(r => Math.abs(r.win - expected) > 0.06).map(r => r.id).join(', ') || 'none'}`);
+
+if (args.includes('--assert-pacing')) {
+  if (mode !== 'melee') throw new Error('--assert-pacing requires --mode melee');
+  if (shortRound < 8 || medianRound < 12 || earlyFirstDeath < 2.5 || medianFirstDeath < 3.5) {
+    console.error(`bot pacing regressed: rounds ${shortRound.toFixed(1)}/${medianRound.toFixed(1)}s, first eliminations ${earlyFirstDeath.toFixed(1)}/${medianFirstDeath.toFixed(1)}s (p25/median)`);
+    process.exitCode = 1;
+  }
+}

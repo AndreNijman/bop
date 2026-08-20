@@ -5,12 +5,12 @@
 // live in sim.js, all the numbers live in data.js, so this file never decides
 // anything about the game itself.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260820-4';
-import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260820-4';
-import { createBrain, driveBot } from './bots.js?v=20260820-4';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20260820-4';
-import { createAudio } from './audio.js?v=20260820-4';
-import { createNet, fetchLobbies, relayBase } from './net.js?v=20260820-4';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260820-5';
+import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260820-5';
+import { createBrain, driveBot } from './bots.js?v=20260820-5';
+import { createRenderer, paintAbilityIcon } from './render.js?v=20260820-5';
+import { createAudio } from './audio.js?v=20260820-5';
+import { createNet, fetchLobbies, relayBase } from './net.js?v=20260820-5';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -1191,20 +1191,28 @@ function frame(now) {
       const input = readLocalInput(local, reference);
       for (const player of clones) applyInput(player, input);
     }
-    if (G.mode === 'offline') {
-      for (const player of world.players) {
-        if (!player.bot || !player.alive || G.offline?.calm) continue;
-        let brain = G.brains.get(player.pid);
-        if (!brain) { brain = createBrain(player.pid * 31 + G.round); G.brains.set(player.pid, brain); }
-        driveBot(world, player, brain, TUNE.step);
-      }
-    } else {
+    if (G.mode === 'online') {
       G.net.pump(dt, readLocalInput(G.locals[0], localPlayer()) , 1 / TUNE.inputHz);
     }
 
     accumulator += dt;
     let steps = 0;
     while (accumulator >= TUNE.step && steps < 5) {
+      if (G.mode === 'offline' && !G.offline?.calm) {
+        const shared = new Map();
+        for (const player of world.players) {
+          if (!player.bot || !player.alive) continue;
+          const input = shared.get(player.pid);
+          if (input) {
+            applyInput(player, input);
+            continue;
+          }
+          let brain = G.brains.get(player.pid);
+          if (!brain) { brain = createBrain(player.pid * 31 + G.round); G.brains.set(player.pid, brain); }
+          driveBot(world, player, brain, TUNE.step);
+          shared.set(player.pid, { ...player.input, ab: [...player.input.ab] });
+        }
+      }
       const events = step(world, TUNE.step);
       renderer.feed(events, world);
       audio.feed(events);

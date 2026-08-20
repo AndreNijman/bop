@@ -125,8 +125,9 @@ arena. All four came out of death-cause tallies rather than guesswork.
 ## Testing
 
 ```bash
-npm run check        # 29 headless checks: adhesion, loadouts, teams, clones,
+npm run check        # 32 headless checks: adhesion, loadouts, teams, clones,
                      # abilities, traps, snapshots, sudden death and a full match
+npm run test:bots    # 120 deterministic bot rounds with pacing thresholds
 npm test             # boots the page, plays a practice round through the real UI
 npm run test:mp      # lobby creation, color teams, loadout sync, movement,
                      # chat, joinability, drift, and a client leaving
