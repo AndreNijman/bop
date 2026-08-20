@@ -126,9 +126,15 @@ npm run check        # 14 headless checks: resting contacts, edge falls, crushin
 npm test             # boots the page, plays a practice round through the real UI
 npm run test:mp      # lobby creation, password refusal, discovery, draft sync,
                      # movement across clients, chat, drift, a client leaving
+node tools/playtest.mjs --all   # plays a session per ability and reports telemetry
 ```
 
 Both browser tests fail on any console error, page error or failed request.
+
+`tools/playtest.mjs` is not an assertion harness — it drives real input through a
+real browser and dumps telemetry and screenshots into `shots/` so the behaviour of
+an individual ability can actually be looked at. `?kit=grenade,dash,beam` and
+`?map=shelf` pin a loadout and an arena in practice mode for exactly this.
 
 ## Licence and attribution
 
