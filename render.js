@@ -64,6 +64,7 @@ export function createRenderer(canvas) {
         case 'smoke': spawn(e.x, e.y, 12, { speed: 3, life: 0.9, r: 0.3, color: '#b9b9c8', grav: -1 }); break;
         case 'resize': spawn(e.x, e.y, 8, { speed: 3, life: 0.3, r: 0.12, color: e.d > 0 ? '#9dff9d' : '#ff9dd6', grav: 0 }); break;
         case 'round': flash = 0.25; flashColor = '#ffffff'; break;
+        case 'dust': spawn(e.x, e.y, 2, { speed: 1.2, life: 0.5, r: 0.07, color: 'rgba(255,255,255,0.75)', grav: -0.6 }); break;
       }
     }
     if (world && world.freeze) flash = Math.max(flash, 0.05);
@@ -107,7 +108,7 @@ export function createRenderer(canvas) {
     const speed = Math.hypot(vx, vy);
     const dir = speed > 0.4 ? Math.atan2(vy, vx) : 0;
     const squash = clamp(stretch, 0, 1);
-    const stretchAmt = clamp(speed / 26, 0, 0.32);
+    const stretchAmt = clamp(speed / 40, 0, 0.19);
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(x, y);
@@ -153,45 +154,91 @@ export function createRenderer(canvas) {
     ctx.restore();
   }
 
-  function drawTerrain(ctx, b, theme, t) {
+  // Terrain: body fill, then a cap band along the top edge, then the outline.
+  // The band is made by filling the capsule with the cap colour and stamping the
+  // body colour over a copy shifted downward, all inside a clip.
+  function drawTerrain(ctx, b, theme, t, world) {
+    const ice = b.ptype === 'ice';
+    const capThickness = Math.min(theme.capThickness, b.r * 0.85);
+    ctx.save();
     capsulePath(ctx, b.x, b.y, b.hx, b.r, b.ang);
-    ctx.fillStyle = theme.land;
+    ctx.clip();
+    capsulePath(ctx, b.x, b.y, b.hx, b.r, b.ang);
+    ctx.fillStyle = ice ? '#eaf6ff' : theme.cap;
     ctx.fill();
-    ctx.lineWidth = Math.max(0.05, b.r * 0.16);
-    ctx.strokeStyle = theme.edge;
-    ctx.stroke();
-    if (b.ptype === 'ice') {
-      ctx.save();
-      capsulePath(ctx, b.x, b.y, b.hx, b.r, b.ang);
-      ctx.clip();
-      ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-      ctx.lineWidth = 0.05;
-      for (let i = -3; i <= 3; i++) {
+    ctx.save();
+    ctx.translate(0, capThickness);
+    capsulePath(ctx, b.x, b.y, b.hx, b.r, b.ang);
+    ctx.fillStyle = ice ? '#a9cbe6' : theme.land;
+    ctx.fill();
+    ctx.restore();
+
+    // Texture inside the body.
+    if (world.theme === 'space') {
+      for (let i = 0; i < 4; i++) {
+        const seed = (b.id * 37 + i * 61) % 100 / 100;
+        const cx = b.x + (seed - 0.5) * (b.hx * 1.6 + b.r);
+        const cy = b.y + ((seed * 7 % 1) - 0.35) * b.r * 1.1;
         ctx.beginPath();
-        ctx.moveTo(b.x + i * 0.5 - 0.4, b.y - b.r);
-        ctx.lineTo(b.x + i * 0.5 + 0.4, b.y + b.r);
+        ctx.arc(cx, cy, b.r * (0.12 + seed * 0.16), 0, TAU);
+        ctx.fillStyle = theme.capDeep;
+        ctx.fill();
+      }
+    } else if (ice) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+      ctx.lineWidth = 0.05;
+      for (let i = -4; i <= 4; i++) {
+        ctx.beginPath();
+        ctx.moveTo(b.x + i * 0.55 - 0.3, b.y - b.r);
+        ctx.lineTo(b.x + i * 0.55 + 0.35, b.y + b.r);
         ctx.stroke();
       }
-      ctx.restore();
+    } else if (world.theme === 'grass') {
+      // A few tufts hanging off the grass line, and some grit in the soil.
+      ctx.fillStyle = theme.capDeep;
+      for (let i = 0; i < 7; i++) {
+        const seed = (b.id * 53 + i * 29) % 100 / 100;
+        const cx = b.x + (seed - 0.5) * (b.hx * 1.9 + b.r * 1.2);
+        ctx.beginPath();
+        ctx.arc(cx, b.y - b.r + capThickness * (0.85 + seed * 0.5), 0.07 + seed * 0.05, 0, TAU);
+        ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(0,0,0,0.16)';
+      for (let i = 0; i < 5; i++) {
+        const seed = (b.id * 91 + i * 47) % 100 / 100;
+        ctx.beginPath();
+        ctx.arc(b.x + (seed - 0.5) * (b.hx * 1.7 + b.r), b.y + seed * b.r * 0.7, 0.06 + seed * 0.05, 0, TAU);
+        ctx.fill();
+      }
     }
+    ctx.restore();
+
+    capsulePath(ctx, b.x, b.y, b.hx, b.r, b.ang);
+    ctx.lineWidth = Math.max(0.05, b.r * 0.14);
+    ctx.strokeStyle = theme.edge;
+    ctx.stroke();
+
     if (b.ptype === 'moving') {
-      // The glowing studs are the tell that a platform travels.
-      const pulse = 0.6 + 0.4 * Math.sin(t * 4);
-      const c = Math.cos(b.ang), s = Math.sin(b.ang);
+      // Glowing studs are the tell that a platform travels.
+      const pulse = 0.55 + 0.45 * Math.sin(t * 4);
+      const c = Math.cos(b.ang), sn = Math.sin(b.ang);
       for (const side of [-0.55, 0.55]) {
         ctx.beginPath();
-        ctx.arc(b.x + c * b.hx * side, b.y + s * b.hx * side - b.r * 0.35, b.r * 0.2, 0, TAU);
+        ctx.arc(b.x + c * b.hx * side, b.y + sn * b.hx * side + b.r * 0.3, b.r * 0.19, 0, TAU);
         ctx.fillStyle = `rgba(255,214,92,${pulse})`;
         ctx.fill();
+        ctx.strokeStyle = `rgba(255,180,40,${pulse})`;
+        ctx.lineWidth = 0.04;
+        ctx.stroke();
       }
     }
     if (b.ptype === 'free') {
       ctx.save();
-      ctx.globalAlpha = 0.5;
+      ctx.globalAlpha = 0.45;
       ctx.strokeStyle = '#ffffff';
       ctx.setLineDash([0.14, 0.14]);
       ctx.lineWidth = 0.04;
-      capsulePath(ctx, b.x, b.y, b.hx + 0.12, b.r + 0.12, b.ang);
+      capsulePath(ctx, b.x, b.y, b.hx + 0.1, b.r + 0.1, b.ang);
       ctx.stroke();
       ctx.restore();
     }
@@ -250,7 +297,11 @@ export function createRenderer(canvas) {
     if (world.water == null) return;
     const y = world.water;
     ctx.save();
-    ctx.fillStyle = world.theme === 'ice' ? 'rgba(80,150,220,0.72)' : 'rgba(50,160,220,0.72)';
+    const theme = THEMES[world.theme];
+    const grad = ctx.createLinearGradient(0, y, 0, y + 4);
+    grad.addColorStop(0, theme.waterFill);
+    grad.addColorStop(1, theme.waterDeep);
+    ctx.fillStyle = grad;
     ctx.beginPath();
     ctx.moveTo(-40, y);
     for (let x = -40; x <= 40; x += 0.5) {
@@ -604,7 +655,7 @@ export function createRenderer(canvas) {
 
     for (const b of world.bodies) {
       if (b.kind !== 'plat' || b.hidden > 0) continue;
-      drawTerrain(ctx, b, THEMES[world.theme], view.time);
+      drawTerrain(ctx, b, THEMES[world.theme], view.time, world);
     }
     for (const b of world.bodies) {
       if (b.kind === 'plat' || b.kind === 'bopl' || b.hidden > 0) continue;
@@ -616,6 +667,7 @@ export function createRenderer(canvas) {
       for (let j = i + 1; j < coils.length; j++) {
         const a = coils[i], b = coils[j];
         if (a.owner !== b.owner || a.slot !== b.slot) continue;
+        if ((a.arcOff || 0) > 0 || (b.arcOff || 0) > 0) continue;
         ctx.beginPath();
         const steps = 10;
         for (let k = 0; k <= steps; k++) {

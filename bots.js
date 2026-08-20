@@ -36,20 +36,77 @@ function aim(p, tx, ty) {
   p.input.ay = dy / l;
 }
 
+function isTerrain(b) {
+  if (b.dead || b.hidden > 0) return false;
+  return b.kind === 'plat' || (b.kind === 'bopl' && b.form === 'platform');
+}
+
 // Is there terrain under this point? Used for edge safety and for deciding
 // whether a jump lands anywhere.
 function groundNear(w, x, y, reach = 1.5) {
   for (const b of w.bodies) {
-    if (b.dead || b.hidden > 0) continue;
-    if (b.kind !== 'plat' && !(b.kind === 'bopl' && b.form === 'platform')) continue;
+    if (!isTerrain(b)) continue;
     const s = surfacePoint(b, x, y);
     if (s.sy > y - 0.4 && len(s.sx - x, s.sy - y) < reach) return b;
   }
   return null;
 }
 
+// Drop a plumb line: is there anything to land on below this column, within a
+// survivable distance and inside the arena? This is the test that keeps a bot
+// from strolling into the water, and the old proximity check was far too weak.
+function footingBelow(w, x, y, maxDrop = 7) {
+  if (Math.abs(x) > w.bounds.x - 0.5) return null;
+  const floor = w.water != null ? Math.min(w.water, w.bounds.y) : w.bounds.y;
+  let best = null;
+  for (const b of w.bodies) {
+    if (!isTerrain(b)) continue;
+    const half = Math.abs(Math.cos(b.ang)) * b.hx + b.r;
+    if (x < b.x - half || x > b.x + half) continue;
+    const top = b.y - Math.abs(Math.sin(b.ang)) * b.hx - b.r;
+    if (top < y - 0.35) continue;                     // above us, cannot land on it
+    if (top > floor) continue;                        // under the water line
+    if (top - y > maxDrop) continue;
+    if (!best || top < best.top) best = { body: b, top };
+  }
+  return best;
+}
+
+// Where should a falling bopl aim for? Nearest column with something under it.
+function nearestLanding(w, p) {
+  let best = null;
+  for (let step = 0; step <= 16; step++) {
+    for (const side of step === 0 ? [0] : [-1, 1]) {
+      const x = p.x + side * step * 0.7;
+      const spot = footingBelow(w, x, p.y - 0.2, 14);
+      if (!spot) continue;
+      const cost = Math.abs(x - p.x);
+      if (!best || cost < best.cost) best = { x, cost, top: spot.top };
+    }
+    if (best) break;
+  }
+  return best;
+}
+
 function threatNear(w, p) {
   let worst = null, score = 0;
+  // A live tesla arc is lethal to whoever placed it, so treat the line between
+  // any matched pair of coils as something to stay away from.
+  const coils = w.bodies.filter(b => b.kind === 'coil' && !b.dead && (b.arcOff || 0) <= 0);
+  for (let i = 0; i < coils.length; i++) {
+    for (let j = i + 1; j < coils.length; j++) {
+      const a = coils[i], c = coils[j];
+      if (a.owner !== c.owner || a.slot !== c.slot) continue;
+      const dx = c.x - a.x, dy = c.y - a.y;
+      const span = dx * dx + dy * dy;
+      const t = span > 1e-6 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / span)) : 0;
+      const cx = a.x + dx * t, cy = a.y + dy * t;
+      const d = len(p.x - cx, p.y - cy);
+      if (d > 2.4) continue;
+      const s = (2.4 - d) + 1.2;
+      if (s > score) { score = s; worst = { x: cx, y: cy, vx: 0, vy: 0, kind: 'arc' }; }
+    }
+  }
   for (const b of w.bodies) {
     if (b === p || b.dead || b.hidden > 0) continue;
     const dangerous = b.lethal || b.kind === 'grenade' || b.kind === 'missile' || b.kind === 'mine' || b.kind === 'hole'
@@ -109,7 +166,7 @@ function sustain(w, p, ab, index, target, gap, threat, falling, brain, dt) {
 }
 
 export function createBrain(seed) {
-  return { t: 0, hold: [0, 0, 0], want: [0, 0, 0], jumpT: 0, wander: 0, dir: seed % 2 ? 1 : -1, panic: 0, seed };
+  return { commit: null, recovering: 0, t: 0, hold: [0, 0, 0], want: [0, 0, 0], jumpT: 0, wander: 0, dir: seed % 2 ? 1 : -1, panic: 0, seed };
 }
 
 export function driveBot(w, p, brain, dt) {
@@ -139,9 +196,21 @@ export function driveBot(w, p, brain, dt) {
   if (target) aim(p, target.x + target.vx * 0.16, target.y + target.vy * 0.16 - 0.15);
   else aim(p, p.x + brain.dir, p.y);
 
+  // Piloting a live missile: climb clear of our own footing before turning it
+  // on the target, the way a person sweeps it up and over.
+  for (const b of w.bodies) {
+    if (b.kind !== 'missile' || b.dead || b.owner !== p.pid || !b.guided) continue;
+    const age = w.t - b.spawn;
+    if (age < 0.42) {
+      const side = target ? Math.sign(target.x - p.x) || 1 : 1;
+      aim(p, p.x + side * 0.35, p.y - 3);
+    } else if (target) aim(p, target.x + target.vx * 0.2, target.y + target.vy * 0.2);
+    break;
+  }
+
   // Recover: if we are below every platform, get back up.
-  const under = !groundNear(w, p.x, p.y + 1.4, 2.4);
-  const drowning = w.water != null && p.y > w.water - 2.4;
+  const under = !footingBelow(w, p.x, p.y, 9);
+  const drowning = w.water != null && p.y > w.water - 3.2 && !p.grounded;
   const outward = Math.abs(p.x) > w.bounds.x - 1.6;
 
   if (target) {
@@ -159,21 +228,57 @@ export function driveBot(w, p, brain, dt) {
     if (threat.y > p.y - 0.3) wantJump = true;
   } else brain.panic = Math.max(0, brain.panic - dt);
 
-  if (drowning || under) { wantJump = true; moveX = p.x > 0 ? -1 : 1; }
+  // Survival overrides everything. Falling off is the single biggest killer, so
+  // a bot in the air with nothing beneath it stops fighting and steers for land.
+  const airborne = !p.grounded;
+  const landing = airborne ? nearestLanding(w, p) : null;
+  const columnClear = footingBelow(w, p.x, p.y, 20);
+  if (airborne && !columnClear) {
+    if (landing) moveX = landing.x > p.x + 0.15 ? 1 : landing.x < p.x - 0.15 ? -1 : 0;
+    else moveX = p.x > 0 ? -1 : 1;
+    brain.recovering = 0.55;
+  } else if (brain.recovering > 0) {
+    brain.recovering -= dt;
+  }
+
+  // A committed contact attack overrides the usual spacing dance, but never the
+  // survival steering above it.
+  if (brain.commit && brain.commit.t > 0) {
+    brain.commit.t -= dt;
+    if (!airborne || columnClear) {
+      moveX = brain.commit.dir;
+      if (brain.commit.jump) wantJump = true;
+    }
+  } else brain.commit = null;
+
   if (outward) moveX = p.x > 0 ? -1 : 1;
 
-  // Edge safety: never stroll off unless the jump lands on something.
+  // Edge safety on the ground: never stroll off unless the far side is real.
+  // A committed attack is allowed to leap the gap rather than turn back, which
+  // is how Rock and Meteor ever reach someone on the next platform along.
   if (p.grounded && moveX !== 0) {
-    const probe = groundNear(w, p.x + moveX * (p.r + 0.75), p.y + 0.55, 1.2);
-    if (!probe) {
-      const hop = groundNear(w, p.x + moveX * 3.1, p.y + 0.2, 2.0);
-      if (hop && target && Math.abs(target.x - p.x) > 2) wantJump = true;
-      else moveX = -moveX;
+    // Height is not the danger, emptiness is: dropping onto a lower platform is
+    // fine, so the probes look a long way down and only the void counts.
+    const ahead = footingBelow(w, p.x + moveX * (p.r + 0.8), p.y, 12);
+    if (!ahead) {
+      const leap = footingBelow(w, p.x + moveX * 2.6, p.y, 12)
+        || footingBelow(w, p.x + moveX * 4.0, p.y, 12)
+        || footingBelow(w, p.x + moveX * 5.6, p.y, 12)
+        || footingBelow(w, p.x + moveX * 7.4, p.y, 12);
+      const committed = brain.commit && brain.commit.t > 0;
+      if (leap && (committed || (target && Math.abs(target.x - p.x) > 2.2))) wantJump = true;
+      else if (!committed || !leap) moveX = -moveX;
     }
   }
-  if (!p.grounded && w.water != null && p.vy > 2 && p.y > w.water - 4) {
-    const pad = groundNear(w, p.x + p.vx * 0.5, p.y + 1.6, 2.6);
-    if (!pad) moveX = p.x > 0 ? -1 : 1;
+
+  // Falling with speed and nothing below: hold the direction that reaches land.
+  if (airborne && p.vy > 1.5) {
+    const drift = footingBelow(w, p.x + p.vx * 0.45, p.y, 20);
+    if (!drift) {
+      const spot = landing || nearestLanding(w, p);
+      if (spot) moveX = spot.x > p.x ? 1 : -1;
+      else moveX = p.x > 0 ? -1 : 1;
+    }
   }
 
   p.input.mx = moveX;
@@ -218,13 +323,24 @@ export function driveBot(w, p, brain, dt) {
         }
         break;
       }
-      case 'missile': if (target && gap > 3.4 && gap < 15) { fire = true; hold = clamp(gap / 9, 0.5, 1) * ab.charge; } break;
+      case 'missile': {
+        if (!target || gap < 3.6 || gap > 15) break;
+        // Steering it downward while standing on terrain just detonates it on
+        // the platform under our feet.
+        if (p.grounded && target.y > p.y + 3.2 && gap < 4.5) break;
+        fire = true;
+        hold = Math.max(0.75, clamp(gap / 9, 0.5, 1) * ab.charge);
+        break;
+      }
       case 'smoke': if (target && gap < 7) { fire = true; hold = ab.charge * 0.8; } break;
       case 'throw': if (target && gap < 9 && p.grounded) { fire = true; hold = ab.charge; } break;
       case 'meteor': {
-        // Straight down only: either directly overhead, or falling onto them.
-        const above = target && target.y > p.y + 0.25 && Math.abs(target.x - p.x) < (p.grounded ? 1.3 : 2.2);
-        if (above && gap < 7) { fire = true; hold = ab.charge * 0.7; }
+        // Meteor only travels straight down, so get overhead before dropping.
+        if (!target || gap > 8) break;
+        const dx = target.x - p.x;
+        const above = target.y > p.y + 0.25 && Math.abs(dx) < (p.grounded ? 1.4 : 2.4);
+        if (above) { fire = true; hold = ab.charge * 0.7; }
+        else if (Math.abs(dx) < 5) brain.commit = { dir: Math.sign(dx), t: 0.4, jump: target.y >= p.y - 0.3 };
         break;
       }
       case 'roll': if (target && gap < 6 && p.grounded) { p.rollHint = target.x > p.x ? 1 : -1; p.input.ax = p.rollHint; p.input.ay = 0; fire = true; hold = ab.charge; } break;
@@ -233,7 +349,14 @@ export function driveBot(w, p, brain, dt) {
       case 'growray': if (p.size < 3 && brain.t > 1.5) { p.input.ax = 0; p.input.ay = -1; fire = true; hold = ab.charge; } break;
       case 'shrinkray': if (target && gap < 9) { fire = true; hold = ab.charge; } break;
       case 'timestop': if (target && gap < 7 && !w.freeze) { fire = true; hold = ab.charge + 0.1; } break;
-      case 'rock': if (target && gap < 7 && (Math.abs(p.vx) > 2 || !p.grounded)) { fire = true; hold = 1.4; } break;
+      case 'rock': {
+        // Rock keeps momentum and cannot steer, so build speed at them first.
+        if (!target || gap > 9) break;
+        const toward = Math.sign(target.x - p.x);
+        if (Math.abs(p.vx) > 2.6 && Math.sign(p.vx) === toward) { fire = true; hold = 1.4; }
+        else brain.commit = { dir: toward, t: 0.5, jump: gap > 3.5 && !!footingBelow(w, p.x + toward * 3.4, p.y, 12) };
+        break;
+      }
       case 'drill': if (target && gap < 9 && gap > 1.4) { fire = true; hold = 0.3; } break;
       case 'beam': if (target && gap < ab.range * 0.9) { fire = true; hold = 0.35; } break;
       case 'magnet': {

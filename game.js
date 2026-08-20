@@ -323,7 +323,25 @@ function offerFor(record, rand) {
   return offer;
 }
 
+// Practice mode honours ?kit=grenade,dash,beam so a specific loadout can be
+// examined without rolling the draft. Offline only; the relay never reads it.
+function forcedKit() {
+  const raw = new URLSearchParams(location.search).get('kit');
+  if (!raw) return null;
+  const ids = raw.split(',').map(s => s.trim()).filter(id => ABILITY_BY_ID.has(id)).slice(0, TUNE.slots);
+  return ids.length ? ids : null;
+}
+
 function openDraft() {
+  const kit = forcedKit();
+  if (kit && G.mode === 'offline') {
+    for (const record of G.roster) {
+      if (G.locals.some(l => l.pid === record.pid)) record.abilities = [...kit];
+      else if (!record.abilities.length) record.abilities = offerFor(record, G.offline.rand);
+    }
+    offlineStartRound();
+    return;
+  }
   const rand = G.offline.rand;
   const replacing = G.round >= TUNE.slots;
   const rows = [];
@@ -352,6 +370,23 @@ function applyPick(record, abilityId, slot) {
 function offlineStartRound() {
   G.round++;
   let mapIndex = 0;
+  // ?map= pins the arena in practice mode, which is how the theme art gets
+  // reviewed without replaying until the right one comes up.
+  const pinned = new URLSearchParams(location.search).get('map');
+  if (pinned !== null) {
+    const byId = MAPS.findIndex(m => m.id === pinned);
+    mapIndex = byId >= 0 ? byId : clamp(parseInt(pinned, 10) || 0, 0, MAPS.length - 1);
+    G.offline.mapHistory.push(mapIndex);
+    buildWorld({
+      seed: (Date.now() ^ (G.round * 7919)) | 0, mapIndex,
+      players: G.roster.map(r => ({ pid: r.pid, name: r.name, color: r.color, abilities: r.abilities, bot: r.bot })),
+    });
+    G.brains.clear();
+    for (const record of G.roster) if (record.bot) G.brains.set(record.pid, createBrain(record.pid * 31 + G.round));
+    show('play');
+    banner(`Round ${G.round}`, mapName(mapIndex), 1.2);
+    return;
+  }
   if (G.round > 1) {
     const recent = G.offline.mapHistory.slice(-2);
     const choices = MAPS.map((m, i) => i).filter(i => !recent.includes(i));

@@ -188,7 +188,7 @@ button, input, select { font: inherit; color: inherit; }
 #net-info {
   position: absolute;
   right: clamp(6px, 1.2vmin, 16px);
-  top: calc(clamp(6px, 1.2vmin, 16px) + 2.4em);
+  top: calc(clamp(6px, 1.2vmin, 16px) + 2.9em);
   text-align: right;
   text-shadow: 0 1px 3px rgba(10, 8, 16, 0.85);
   font-size: clamp(9px, 1.2vmin, 11px);

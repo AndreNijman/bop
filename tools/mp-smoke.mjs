@@ -198,10 +198,15 @@ try {
 
   await host.screenshot({ path: '/tmp/opencode/bop-mp-smoke.png' });
 
-  // Repository plumbing should not be reachable through the static host.
-  if (!process.env.BASE_URL) {
-    const leak = await fetch(`${baseUrl}/.git/config`);
-    if (leak.ok) problems.push('.git/config is being served');
+  // Repository plumbing must not be readable from the real host. Only asserted
+  // against production: locally this would be testing whether `npx serve` hands
+  // out dotfiles (it does), which says nothing about the deployed game.
+  const leak = await fetch(`${baseUrl}/.git/config`).then(r => r.text()).catch(() => '');
+  const leaking = /repositoryformatversion|\[remote /.test(leak);
+  if (process.env.BASE_URL) {
+    if (leaking) problems.push('.git/config is readable in production');
+  } else if (leaking) {
+    console.log('  note: the dev server serves dotfiles; GitHub Pages 404s them, checked separately in production');
   }
 
   if (problems.length) {

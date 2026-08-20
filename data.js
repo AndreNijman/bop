@@ -21,12 +21,12 @@ export const TUNE = {
   boplDensity: 1.35,
   runSpeed: 6.1,
   runAccel: 62,
-  airAccel: 26,
+  airAccel: 36,
   groundFriction: 12,
   iceFriction: 1.1,
-  jumpSpeed: 8.6,
+  jumpSpeed: 9.2,
   spaceJumpSpeed: 6.6,
-  coyote: 0.09,
+  coyote: 0.12,
   jumpBuffer: 0.11,
   maxSpeed: 46,
   squishRatio: 0.62,            // fraction of a bopl's radius of two-sided crush that kills
@@ -81,12 +81,12 @@ export const BOT_NAMES = [
 export const ABILITIES = [
   {
     id: 'grenade', name: 'Grenade', kind: 'hold', family: 'offensive', tag: 'explosive',
-    cd: 3.0, charge: 1.1, fuse: 1.85, blast: 2.3, impulse: 16.5, throw: [9, 19], weight: 1,
+    cd: 2.7, charge: 1.1, fuse: 1.85, blast: 2.45, impulse: 17.5, throw: [9, 19], weight: 1,
     blurb: 'Lob a fused bomb. It cooks from the moment you press, so short-fuse throws are the scary ones.',
   },
   {
     id: 'missile', name: 'Missile', kind: 'hold', family: 'offensive', tag: 'explosive',
-    cd: 4.0, charge: 2.2, blast: 2.3, impulse: 17, cruise: 6.4, boost: 20, turn: 4.4, weight: 1,
+    cd: 3.6, charge: 2.2, blast: 2.45, impulse: 18, cruise: 6.8, boost: 21, turn: 4.8, weight: 1,
     blurb: 'A rocket you steer by aiming. Let go to send it screaming off at full speed.',
   },
   {
@@ -101,7 +101,7 @@ export const ABILITIES = [
   },
   {
     id: 'beam', name: 'Beam', kind: 'channel', family: 'offensive', tag: 'fire',
-    cd: 10.5, fuel: 0.85, range: 7.4, push: 12, weight: 1,
+    cd: 11.5, fuel: 0.7, range: 7.0, push: 12, weight: 1,
     blurb: 'A sweeping laser that incinerates bopls, shoves objects and sets off anything explosive.',
   },
   {
@@ -156,7 +156,7 @@ export const ABILITIES = [
   },
   {
     id: 'magnet', name: 'Magnet Gun', kind: 'channel', family: 'utility', tag: 'morph',
-    cd: 5.4, fuel: 2.6, range: 8, pull: 20, fling: 21, weight: 1,
+    cd: 4.6, fuel: 2.6, range: 9, pull: 24, fling: 25, weight: 1,
     blurb: 'Haul an object into your grip and hold it there, then hurl it wherever you are aiming.',
   },
   {
@@ -166,7 +166,7 @@ export const ABILITIES = [
   },
   {
     id: 'mine', name: 'Mine', kind: 'tap', family: 'offensive', tag: 'explosive',
-    cd: 4.4, prime: 1.3, hunt: 3.4, seek: 5.2, chase: 8.5, blast: 1.95, impulse: 14, weight: 1,
+    cd: 4.4, prime: 2.0, hunt: 3.4, seek: 5.2, chase: 8.5, blast: 1.95, impulse: 14, weight: 1,
     blurb: 'Drop a mine. It arms itself, then chases the nearest enemy until it runs out of patience.',
   },
   {
@@ -181,8 +181,8 @@ export const ABILITIES = [
   },
   {
     id: 'revival', name: 'Revival', kind: 'tap', family: 'utility', tag: 'support',
-    cd: 17, arm: 2.5, weight: 1,
-    blurb: 'Plant a glowing orb. Once it warms up, dying sends you back to it a size smaller with every cooldown reset.',
+    cd: 34, weight: 1,
+    blurb: 'Plant a glowing orb. Die and you come back at it with every cooldown reset, unless somebody blows the orb up first.',
   },
   {
     id: 'roll', name: 'Roll', kind: 'hold', family: 'offensive', tag: 'mobility',
@@ -221,7 +221,7 @@ export const ABILITIES = [
   },
   {
     id: 'blackhole', name: 'Black Hole', kind: 'tap', family: 'offensive', tag: 'gravity',
-    cd: 15, radius: 5.4, pull: 23, life: 6.5, growth: 0.04, weight: 1,
+    cd: 20, radius: 3.6, pull: 13, life: 4.2, growth: 0.02, weight: 1,
     blurb: 'Open a singularity that drags everything in and swells as it feeds. Shrink it and it spits instead.',
   },
 ];
@@ -243,10 +243,24 @@ export const ABILITY_IDS = ABILITIES.map(a => a.id);
 //   ice    - ground with almost no friction
 const P = (x, y, hx, r, extra = {}) => ({ x, y, hx, r, ang: 0, type: 'ground', ...extra });
 
+// Each theme paints terrain as a body with a cap band along its top edge, which
+// is what makes a slab read as ground rather than an abstract shape.
 export const THEMES = {
-  grass: { sky: '#7fd4f5', deep: '#3aa6d8', land: '#3d2f4f', edge: '#6f5a8c', water: 5.5, gravity: TUNE.gravity, friction: 1 },
-  ice: { sky: '#1d2b4a', deep: '#0d1730', land: '#dbeeff', edge: '#8fb8dd', water: 5.5, gravity: TUNE.gravity, friction: 1 },
-  space: { sky: '#0b0a1c', deep: '#05040f', land: '#4a4763', edge: '#7d79a3', water: null, gravity: TUNE.spaceGravity, friction: 1 },
+  grass: {
+    sky: '#86d9f7', deep: '#3f9fd4', water: 6.1, waterFill: '#2f86c9', waterDeep: '#1c5f97',
+    land: '#7c4b2a', cap: '#5cc23f', capDeep: '#3f9a2a', edge: '#3f2413', capThickness: 0.34,
+    gravity: TUNE.gravity, friction: 1,
+  },
+  ice: {
+    sky: '#1e3055', deep: '#0c1731', water: 6.1, waterFill: '#1f5486', waterDeep: '#122f52',
+    land: '#bdd6ee', cap: '#ffffff', capDeep: '#e4f1ff', edge: '#7fa3c6', capThickness: 0.3,
+    gravity: TUNE.gravity, friction: 1,
+  },
+  space: {
+    sky: '#0c0a1e', deep: '#04030d', water: null, waterFill: null, waterDeep: null,
+    land: '#57546c', cap: '#7a7793', capDeep: '#4a475e', edge: '#312e44', capThickness: 0.26,
+    gravity: TUNE.spaceGravity, friction: 1,
+  },
 };
 
 export const MAPS = [
@@ -261,7 +275,7 @@ export const MAPS = [
       P(-9.2, 2.9, 1.3, 0.6),
       P(9.2, 2.9, 1.3, 0.6),
     ],
-    spawns: [[-3.2, 0.6], [3.2, 0.6], [-6.4, -1.4], [6.4, -1.4], [0, -3.9], [-9.2, 1.1], [9.2, 1.1], [0, 0.6]],
+    spawns: [[0, 1.1], [0.5, -3.3], [-1.6, -3.3], [3.3, 1.1], [-3.3, 1.1], [5.3, -1], [-5.3, -1], [-7.5, -1]],
   },
   {
     id: 'stepping', name: 'Stepping Stones', theme: 'grass',
@@ -275,7 +289,7 @@ export const MAPS = [
       P(-2.1, -3.2, 0.9, 0.5, { type: 'moving', path: [1.9, 0], period: 5.5 }),
       P(2.1, -3.2, 0.9, 0.5, { type: 'moving', path: [-1.9, 0], period: 5.5 }),
     ],
-    spawns: [[-8.5, 1.8], [8.5, 1.8], [-4.2, 0], [4.2, 0], [0, -1.8], [-2.1, -4.6], [2.1, -4.6], [0, 3]],
+    spawns: [[-0.9, -1.7], [0.9, -1.7], [-2.6, -4.4], [1.6, -4.4], [-4.9, 0], [3.5, 0], [-9.3, 1.9], [7.7, 1.9]],
   },
   {
     id: 'seesaw', name: 'Seesaw', theme: 'grass',
@@ -288,7 +302,7 @@ export const MAPS = [
       P(-4.6, -2.6, 1.1, 0.5, { type: 'moving', path: [0, 2.1], period: 6.5 }),
       P(4.6, -2.6, 1.1, 0.5, { type: 'moving', path: [0, 2.1], period: 6.5, phase: 0.5 }),
     ],
-    spawns: [[-4, 1.1], [4, 1.1], [-8.6, -0.8], [8.6, -0.8], [0, 1.1], [-4.6, -4], [4.6, -4], [0, -3]],
+    spawns: [[0, 1.2], [2.1, 1.2], [-2.1, 1.2], [4.4, 1.2], [-4.4, 1.2], [7.7, -0.7], [-5.2, -3.8], [-9.5, -0.7]],
   },
   {
     id: 'towers', name: 'Twin Towers', theme: 'grass',
@@ -301,7 +315,7 @@ export const MAPS = [
       P(6.5, -2.6, 1.5, 0.5),
       P(0, 3.4, 1.2, 0.55, { type: 'moving', path: [3.6, 0], period: 7 }),
     ],
-    spawns: [[-6.5, -2.5], [6.5, -2.5], [0, -3], [-6.5, -4.1], [6.5, -4.1], [0, 2], [-3.2, -3], [3.2, -3]],
+    spawns: [[-0.7, 2.2], [0.7, -2.9], [-0.7, -2.9], [5.7, -3.8], [-2, -2.9], [7.3, -3.8], [-5.7, -3.8], [-7.3, -3.8]],
   },
   {
     id: 'canopy', name: 'Canopy', theme: 'grass',
@@ -314,7 +328,7 @@ export const MAPS = [
       P(-3.6, -2.6, 1.1, 0.5),
       P(3.6, -2.6, 1.1, 0.5),
     ],
-    spawns: [[-4, 3.2], [4, 3.2], [-7.4, -0.2], [7.4, -0.2], [0, -1], [-3.6, -4], [3.6, -4], [0, 3.2]],
+    spawns: [[0, 3], [2.7, 3], [-2.7, 3], [5.6, 3], [-5.6, 3], [6.1, 0], [-6.1, 0], [-8.7, 0]],
   },
   {
     id: 'floes', name: 'Floes', theme: 'ice',
@@ -327,7 +341,7 @@ export const MAPS = [
       P(9.6, -1.4, 1.2, 0.55, { type: 'ice' }),
       P(0, 4.2, 1.6, 0.5),
     ],
-    spawns: [[-5.4, 0.8], [5.4, 0.8], [0, -2.1], [-9.6, -2.6], [9.6, -2.6], [0, 3], [-2.6, 0.8], [2.6, 0.8]],
+    spawns: [[-0.9, 3], [1.3, -2.1], [-1.3, -2.1], [3.4, 0.6], [-4.7, 0.6], [6.1, 0.6], [-7.4, 0.6], [-10.3, -2.6]],
   },
   {
     id: 'shelf', name: 'Ice Shelf', theme: 'ice',
@@ -340,7 +354,7 @@ export const MAPS = [
       P(-3.4, 0.2, 0.5, 0.45),
       P(3.4, 0.2, 0.5, 0.45),
     ],
-    spawns: [[-6, 1.8], [6, 1.8], [-7, -1.8], [7, -1.8], [0, -3.6], [0, 1.8], [-2.4, 1.8], [2.4, 1.8]],
+    spawns: [[0, 1.6], [3.2, 1.6], [-1.7, -3.6], [6.1, -1.8], [-3.2, 1.6], [6.6, 1.6], [-6.6, 1.6], [-7.9, -1.8]],
   },
   {
     id: 'crevasse', name: 'Crevasse', theme: 'ice',
@@ -353,20 +367,24 @@ export const MAPS = [
       P(0, 4.0, 1.8, 0.5),
       P(0, -0.6, 1.0, 0.45),
     ],
-    spawns: [[-6.8, -0.3], [6.8, -0.3], [-2.4, -5], [2.4, -5], [0, -1.8], [0, 3], [-9.4, -0.3], [9.4, -0.3]],
+    spawns: [[-1.2, 2.8], [1.2, 2.8], [-4, -0.5], [4, -0.5], [-6.8, -0.5], [6.8, -0.5], [-9.6, -0.5], [9.6, -0.5]],
   },
   {
     id: 'bergs', name: 'Bergs', theme: 'ice',
     bounds: { x: 12.6, y: 6.6 },
     platforms: [
-      P(-8.2, 2.2, 0, 1.5, { type: 'ice' }),
+      P(-8.2, 2.2, 0, 1.5),
       P(-2.8, 0.4, 0, 1.7),
       P(2.8, 0.4, 0, 1.7),
-      P(8.2, 2.2, 0, 1.5, { type: 'ice' }),
+      P(8.2, 2.2, 0, 1.5),
       P(0, -3.2, 2.2, 0.5),
       P(0, 3.6, 0, 1.0),
+      P(-5.5, -1.4, 1.3, 0.45, { type: 'ice' }),
+      P(5.5, -1.4, 1.3, 0.45, { type: 'ice' }),
+      P(-2.8, 2.6, 1.1, 0.45),
+      P(2.8, 2.6, 1.1, 0.45),
     ],
-    spawns: [[-8.2, 0.3], [8.2, 0.3], [-2.8, -1.8], [2.8, -1.8], [0, -4.3], [0, 2.2], [-5.5, 1.4], [5.5, 1.4]],
+    spawns: [[0, 1.9], [0.5, -4.4], [-1.5, -4.4], [2.2, 1.5], [-2.8, -2], [2.8, -2], [-4.7, -2.5], [-6.2, -2.5]],
   },
   {
     id: 'orbit', name: 'Low Orbit', theme: 'space',
@@ -378,8 +396,12 @@ export const MAPS = [
       P(-5.0, 3.6, 2.0, 0.35, { type: 'free' }),
       P(5.0, 3.6, 2.0, 0.35, { type: 'free' }),
       P(0, -4.0, 1.6, 0.4, { type: 'moving', path: [4.4, 0], period: 9 }),
+      P(-4.2, -3.4, 1.4, 0.4),
+      P(4.2, -3.4, 1.4, 0.4),
+      P(-10.2, 1.6, 1.2, 0.4),
+      P(10.2, 1.6, 1.2, 0.4),
     ],
-    spawns: [[-2.6, -0.6], [2.6, -0.6], [-7.2, -3.2], [7.2, -3.2], [0, -1.2], [-5, 2.8], [5, 2.8], [0, -5]],
+    spawns: [[-0.9, -5.1], [1, -1.3], [-1, -1.3], [3.4, -4.5], [-5, -4.5], [9.5, 0.5], [-7.2, -3.6], [-10.9, 0.5]],
   },
   {
     id: 'derelict', name: 'Derelict', theme: 'space',
@@ -391,8 +413,11 @@ export const MAPS = [
       P(0, -1.2, 0, 1.4),
       P(-3.8, -3.6, 1.6, 0.35, { type: 'free' }),
       P(3.8, -3.6, 1.6, 0.35, { type: 'free' }),
+      P(-4.6, 0.8, 1.5, 0.45),
+      P(4.6, 0.8, 1.5, 0.45),
+      P(0, -4.4, 2.0, 0.4),
     ],
-    spawns: [[-8, -1.6], [8, -1.6], [0, -2.9], [-3.8, -4.3], [3.8, -4.3], [0, 2.4], [-4, 2.4], [4, 2.4]],
+    spawns: [[0, 2.1], [1.3, -5.5], [-1.3, -5.5], [1.9, 2.1], [-1.9, 2.1], [3.9, 2.1], [-3.9, 2.1], [-5.4, -0.3]],
   },
   {
     id: 'rings', name: 'Rings', theme: 'space',
@@ -400,11 +425,15 @@ export const MAPS = [
     platforms: [
       P(-6.0, 0.0, 0, 2.0),
       P(6.0, 0.0, 0, 2.0),
-      P(0, 3.4, 1.4, 0.45, { type: 'moving', path: [0, -6.4], period: 10 }),
-      P(0, -3.4, 1.4, 0.45, { type: 'moving', path: [0, 6.4], period: 10 }),
+      P(0, 2.6, 1.4, 0.45, { type: 'moving', path: [0, -3.4], period: 15 }),
+      P(0, -2.6, 1.4, 0.45, { type: 'moving', path: [0, 3.4], period: 15 }),
       P(0, 0, 0, 0.9, { type: 'free' }),
+      P(-9.6, 2.4, 1.4, 0.4),
+      P(9.6, 2.4, 1.4, 0.4),
+      P(-2.6, -1.6, 1.2, 0.4),
+      P(2.6, -1.6, 1.2, 0.4),
     ],
-    spawns: [[-6, -2.4], [6, -2.4], [-8.4, -0.2], [8.4, -0.2], [0, 2.4], [0, -4.4], [-6, 2.2], [6, 2.2]],
+    spawns: [[-8.8, 1.3], [1.9, -2.7], [-0.8, -4.5], [6, -2.7], [-3.3, -2.7], [8.8, 1.3], [-6, -2.7], [-10.4, 1.3]],
   },
   {
     id: 'moonlet', name: 'Moonlet', theme: 'space',
@@ -415,8 +444,13 @@ export const MAPS = [
       P(8.6, -2.4, 0, 1.2),
       P(-6.4, 3.4, 1.8, 0.35, { type: 'free' }),
       P(6.4, 3.4, 1.8, 0.35, { type: 'free' }),
+      P(-5.4, -1.8, 1.5, 0.4),
+      P(5.4, -1.8, 1.5, 0.4),
+      P(0, -4.6, 1.8, 0.4),
+      P(-2.4, -3.4, 1.1, 0.4),
+      P(2.4, -3.4, 1.1, 0.4),
     ],
-    spawns: [[-3.4, -1.4], [3.4, -1.4], [0, -2.8], [-8.6, -3.9], [8.6, -3.9], [-6.4, 2.6], [6.4, 2.6], [0, 4.4]],
+    spawns: [[-1.2, -5.7], [1.2, -5.7], [-1.3, -2.9], [1.3, -2.9], [-3, -4.5], [3, -4.5], [-6.2, -2.9], [4.6, -2.9]],
   },
   {
     id: 'gantry', name: 'Gantry', theme: 'grass',
@@ -429,7 +463,7 @@ export const MAPS = [
       P(4.6, -1.8, 1.8, 0.5, { type: 'moving', path: [0, 3.2], period: 7.5, phase: 0.5 }),
       P(0, -4.2, 2.6, 0.5),
     ],
-    spawns: [[-9, 1.4], [9, 1.4], [-4.6, -3], [4.6, -3], [0, -5.4], [0, -2], [-6.8, 1.4], [6.8, 1.4]],
+    spawns: [[-1.7, -5.4], [0.6, -5.4], [-3.4, -3], [7.5, 1.3], [-5.8, -3], [9.5, 1.3], [-8.5, 1.3], [-10.5, 1.3]],
   },
   {
     id: 'lattice', name: 'Lattice', theme: 'ice',
@@ -442,7 +476,7 @@ export const MAPS = [
       P(7.6, -2.2, 1.8, 0.45),
       P(0, -4.0, 1.2, 0.45, { type: 'free' }),
     ],
-    spawns: [[-5.6, 1.4], [5.6, 1.4], [-2.4, -0.9], [2.4, -0.9], [-7.6, -3.4], [7.6, -3.4], [0, -5.2], [0, -0.9]],
+    spawns: [[0, -1], [2.5, -1], [-2.5, -1], [6.4, -3.3], [-6.4, -3.3], [8.8, -3.3], [-7, 1.1], [-8.8, -3.3]],
   },
 ];
 

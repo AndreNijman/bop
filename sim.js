@@ -162,14 +162,17 @@ export function createWorld(opts) {
     const b = addBody(w, {
       kind: 'plat', x: spec.x, y: spec.y, ang: spec.ang || 0,
       hx: spec.hx, r: spec.r, baseHx: spec.hx, baseR: spec.r,
-      ptype: spec.type, rotates: true, density: 9,
+      // Free terrain has nothing holding it up, so a bopl standing on it pushes
+      // it down forever. Heavy plus well damped means abilities can still shove
+      // it about while a resting passenger barely moves it.
+      ptype: spec.type, rotates: true, density: spec.type === 'free' ? 26 : 9,
       rest: TUNE.platformRestitution,
       fric: spec.type === 'ice' ? 0.06 : 0.95,
       anchorX: spec.x, anchorY: spec.y, anchorAng: spec.ang || 0,
       spring: spec.type === 'free' ? 0 : (spec.spring != null ? spec.spring : 1),
       torqueSpring: spec.torqueSpring != null ? spec.torqueSpring : 1,
       path: spec.path || null, period: spec.period || 6, phase: spec.phase || 0,
-      anchorOff: 0, revert: 0, gravity: 0, drag: 0.5,
+      anchorOff: 0, revert: 0, gravity: 0, drag: spec.type === 'free' ? 2.6 : 0.5,
     });
     b.homeX = spec.x; b.homeY = spec.y;
   }
@@ -343,17 +346,13 @@ function vulnerable(p) {
 
 export function kill(w, p, cause, killerPid = -1) {
   if (!p.alive) return;
-  const orb = w.bodies.find(b => b.kind === 'orb' && b.owner === p.pid && !b.dead && b.arm <= 0);
-  if (p.revive && orb && cause !== 'bounds' && cause !== 'water') {
+  const orb = w.bodies.find(b => b.kind === 'orb' && b.owner === p.pid && !b.dead);
+  if (p.revive && orb) {
     p.revive = false;
     orb.dead = true;
     p.x = orb.x; p.y = orb.y;
     p.vx = 0; p.vy = 0;
     p.iframes = TUNE.respawnLock;
-    // Coming back is not free: you return one size down, which is one step from
-    // being edible.
-    p.size = clamp(p.size - 1, TUNE.sizeMin, TUNE.sizeMax);
-    refreshSize(p);
     leaveForm(w, p);
     for (const s of p.slots) s.cd = Math.max(s.cd, ABILITY_BY_ID.get(s.id)?.cd || 0);
     w.events.push({ e: 'revive', x: p.x, y: p.y, c: p.idx });
@@ -391,6 +390,13 @@ function explode(w, x, y, radius, impulse, ownerPid, kind = 'blast') {
       if (b.kind === 'grenade' && b.fuse > 0.12) b.fuse = 0.06;
       if (b.kind === 'smoke') igniteSmoke(w, b);
       if (b.kind === 'mine' && b.state > 0) b.boom = true;
+      if (b.kind === 'orb' && d < radius) {
+        // Blow up the orb and the free life goes with it.
+        const owner = playerById(w, b.owner);
+        if (owner && owner.reviveSlot === b.slot) owner.revive = false;
+        b.dead = true;
+        w.events.push({ e: 'collapse', x: b.x, y: b.y });
+      }
     }
   }
 }
@@ -406,7 +412,15 @@ function igniteSmoke(w, cloud) {
 // ---------------------------------------------------------------------------
 
 function leaveForm(w, p) {
-  if (p.form === 'platform') { p.hx = 0; p.rotates = false; p.ang = 0; p.av = 0; refreshSize(p); }
+  if (p.form === 'platform') {
+    const out = norm(p.input.ax, p.input.ay);
+    const reach = p.hx + p.r + TUNE.boplRadius * sizeScale(p.size) + 0.12;
+    p.hx = 0; p.rotates = false; p.ang = 0; p.av = 0;
+    refreshSize(p);
+    // Step out on the side the platform was looking, so you do not pop out
+    // inside the terrain you were just part of.
+    if (out[0] !== 0 || out[1] !== 0) { p.x += out[0] * reach; p.y += out[1] * reach; }
+  }
   if (p.form === 'gun' || p.form === 'bow') { p.vx *= 0.15; }
   p.form = 'normal';
   p.formT = 0;
@@ -489,7 +503,8 @@ function nearestSolidHit(w, b, skipOwner) {
     if (!SOLID.has(other.kind)) continue;
     // A missile is born above its owner's head and steered from there, so it
     // must not detonate on them while it is still under guidance.
-    if (skipOwner && other.kind === 'bopl' && other.pid === b.owner && (w.t - b.spawn < 0.16 || b.guided)) continue;
+    if (skipOwner && other.kind === 'bopl' && other.pid === b.owner
+      && (w.t - b.spawn < 0.16 || b.guided || len(other.x - b.x, other.y - b.y) < other.r + 1.4)) continue;
     const [a0x, a0y, a1x, a1y] = ends(other);
     const [cx, cy] = closestSeg(a0x, a0y, a1x, a1y, b.x, b.y, b.x, b.y);
     if (len(b.x - cx, b.y - cy) <= other.r + b.r) return other;
@@ -501,6 +516,14 @@ function stepObject(w, b, dt) {
   switch (b.kind) {
     case 'grenade': {
       b.fuse -= dt;
+      if (!b.held) {
+        // Touching a bopl sets it off early, which is what makes a close throw
+        // frightening rather than a bouncing nuisance.
+        for (const p of w.players) {
+          if (!p.alive || p.hidden > 0 || p.pid === b.owner) continue;
+          if (len(p.x - b.x, p.y - b.y) <= p.r + b.r + 0.02) { b.fuse = Math.min(b.fuse, 0.02); break; }
+        }
+      }
       if (b.held) {
         const p = playerById(w, b.owner);
         if (!p || !p.alive) { b.held = false; }
@@ -638,6 +661,7 @@ function stepObject(w, b, dt) {
     }
     case 'coil': {
       b.ttl -= dt;
+      if (b.arcOff > 0) b.arcOff -= dt;
       if (b.ttl <= 0) b.dead = true;
       break;
     }
@@ -679,7 +703,9 @@ function stepObject(w, b, dt) {
         const pull = ab.pull * (b.core * 1.5) / Math.max(0.8, d * d) * sign;
         other.vx += (dx / d) * pull * dt;
         other.vy += (dy / d) * pull * dt;
-        const grace = other.kind === 'bopl' && other.pid === b.owner && w.t - b.spawn < 1.6;
+        // No exemption for the caster: opening one next to yourself is a mistake
+        // you get to watch happen.
+        const grace = other.kind === 'bopl' && other.pid === b.owner && w.t - b.spawn < 0.35;
         if (grace) continue;
         if (!b.white && d < b.core + other.r * 0.35) {
           if (other.kind === 'bopl') { if (other.alive) kill(w, other, 'hole', b.owner); }
@@ -697,7 +723,6 @@ function stepObject(w, b, dt) {
       break;
     }
     case 'orb': {
-      if (b.arm > 0) b.arm -= dt;
       const p = playerById(w, b.owner);
       if (!p || !p.revive || p.reviveSlot !== b.slot) b.dead = true;
       break;
@@ -879,7 +904,7 @@ function tapAbility(w, p, slot, index, ab) {
     case 'revival': {
       for (const b of w.bodies) if (b.kind === 'orb' && b.owner === p.pid && b.slot === index) b.dead = true;
       p.revive = true; p.reviveSlot = index; p.reviveX = p.x; p.reviveY = p.y;
-      addBody(w, { kind: 'orb', x: p.x, y: p.y, r: 0.3, owner: p.pid, slot: index, im: 0, gravity: 0, arm: ab.arm });
+      addBody(w, { kind: 'orb', x: p.x, y: p.y, r: 0.3, owner: p.pid, slot: index, im: 0, gravity: 0 });
       w.events.push({ e: 'orb', x: p.x, y: p.y });
       return true;
     }
@@ -947,7 +972,7 @@ function tapAbility(w, p, slot, index, ab) {
       if (mine.length >= 2) mine[0].dead = true;
       addBody(w, {
         kind: 'coil', x: p.x, y: p.y - p.r * 0.2, r: 0.26 * scale, hx: 0.3 * scale, ang: Math.PI / 2,
-        owner: p.pid, slot: index, density: 4, gravity: 1, ttl: ABILITY_BY_ID.get('tesla').life,
+        owner: p.pid, slot: index, density: 4, gravity: 1, arcOff: 0, ttl: ABILITY_BY_ID.get('tesla').life,
         rest: 0.05, fric: 0.9,
       });
       w.events.push({ e: 'coil', x: p.x, y: p.y });
@@ -968,7 +993,7 @@ function channelAbility(w, p, slot, index, ab, dt) {
       if (blocker) reach = blocker.d;
       p.beamLen = reach;
       for (const b of w.bodies) {
-        if (b === p || b.dead || b.kind === 'engine' || b.kind === 'orb' || b.kind === 'bubble') continue;
+        if (b === p || b.dead || b.kind === 'engine' || b.kind === 'bubble') continue;
         const [a0x, a0y, a1x, a1y] = ends(b);
         const [cax, cay, cbx, cby] = closestSeg(hx, hy, hx + dirx * reach, hy + diry * reach, a0x, a0y, a1x, a1y);
         if (len(cbx - cax, cby - cay) > b.r + 0.16) continue;
@@ -977,6 +1002,13 @@ function channelAbility(w, p, slot, index, ab, dt) {
         if (b.kind === 'grenade') { b.fuse = Math.min(b.fuse, 0.05); continue; }
         if (b.kind === 'mine') { b.boom = true; continue; }
         if (b.kind === 'missile') { explode(w, b.x, b.y, b.blast, b.impulse, b.owner); b.dead = true; continue; }
+        if (b.kind === 'orb') {
+          const owner = playerById(w, b.owner);
+          if (owner && owner.reviveSlot === b.slot) owner.revive = false;
+          b.dead = true;
+          w.events.push({ e: 'collapse', x: b.x, y: b.y });
+          continue;
+        }
         b.vx += dirx * ab.push * dt * Math.min(1.4, b.im * 2.4);
         b.vy += diry * ab.push * dt * Math.min(1.4, b.im * 2.4);
         if (b.kind === 'plat') b.anchorOff = Math.max(b.anchorOff, 0.25);
@@ -1103,8 +1135,15 @@ function channelAbility(w, p, slot, index, ab, dt) {
 function endChannel(w, p, ab) {
   switch (ab.id) {
     case 'drill': {
-      p.vx *= 0.25;
-      p.drillSpeed = 0;
+      // Letting go inside a platform does not strand you: you keep boring until
+      // you break out, then your horizontal momentum is dumped.
+      let inside = false;
+      for (const b of w.bodies) {
+        if (b.kind !== 'plat' || b.dead || b.hidden > 0) continue;
+        if (overlapsBody(b, p.x, p.y, p.r * 0.55)) { inside = true; break; }
+      }
+      if (inside) { p.form = 'drill'; p.digOut = true; }
+      else { p.vx *= 0.25; p.drillSpeed = 0; p.digOut = false; }
       break;
     }
     case 'magnet': {
@@ -1129,7 +1168,10 @@ function endChannel(w, p, ab) {
 const FORM_ABILITY = new Set(['rock', 'bow', 'beam', 'drill', 'blink', 'duplicator', 'growray', 'shrinkray', 'magnet', 'platform', 'roll', 'meteor', 'throw', 'timestop']);
 
 function stepAbilities(w, p, dt) {
-  const locked = p.form === 'rock' || p.form === 'roll' || p.form === 'meteor' || p.form === 'platform' || p.form === 'drill';
+  // While a boulder is in your hands you cannot start anything else, same as
+  // being mid-roll or stuck in rock form.
+  const locked = p.form === 'rock' || p.form === 'roll' || p.form === 'meteor'
+    || p.form === 'platform' || p.form === 'drill' || p.form === 'throw';
   for (let index = 0; index < p.slots.length; index++) {
     const slot = p.slots[index];
     const ab = ABILITY_BY_ID.get(slot.id);
@@ -1212,7 +1254,7 @@ function stepAbilities(w, p, dt) {
       if (ab.id === 'missile') {
         const scale = sizeScale(p.size);
         addBody(w, {
-          kind: 'missile', x: p.x + p.input.ax * 0.2, y: p.y - p.r - 0.35,
+          kind: 'missile', x: p.x + p.input.ax * 0.25, y: p.y - p.r - 0.85,
           r: 0.16 * scale, hx: 0.28 * scale, ang: -Math.PI / 2, owner: p.pid, slot: index,
           guided: true, speed: 1.4, blast: ab.blast * scale, impulse: ab.impulse,
           im: 0, gravity: 0, ttl: 6,
@@ -1235,9 +1277,24 @@ function stepPlayer(w, p, dt) {
     p.hidden -= dt;
     if (p.hidden <= 0 && p.warp) {
       p.warp = false;
-      const a = w.rand() * TAU, d = 1.4 + w.rand() * 2.2;
-      p.x += Math.cos(a) * d;
-      p.y += Math.sin(a) * d;
+      // Reappear near a platform, not floating in the void.
+      let best = null;
+      for (let tries = 0; tries < 12; tries++) {
+        const a = w.rand() * TAU, d = 1.2 + w.rand() * 2.6;
+        const x = p.x + Math.cos(a) * d, y = p.y + Math.sin(a) * d;
+        if (Math.abs(x) > w.bounds.x - 0.6 || Math.abs(y) > w.bounds.y - 0.6) continue;
+        if (w.water != null && y > w.water - 0.8) continue;
+        let clear = true, anchored = false;
+        for (const b of w.bodies) {
+          if (b.kind !== 'plat' || b.dead || b.hidden > 0) continue;
+          if (overlapsBody(b, x, y, p.r * 1.02)) { clear = false; break; }
+          if (overlapsBody(b, x, y, p.r + 2.2)) anchored = true;
+        }
+        if (!clear) continue;
+        if (anchored) { best = [x, y]; break; }
+        if (!best) best = [x, y];
+      }
+      if (best) { p.x = best[0]; p.y = best[1]; }
       p.vx = 0; p.vy = 0;
       p.iframes = Math.max(p.iframes, 0.2);
       w.events.push({ e: 'blink', x: p.x, y: p.y });
@@ -1248,6 +1305,16 @@ function stepPlayer(w, p, dt) {
     if (p.formT <= 0 && (p.form === 'roll' || p.form === 'meteor')) { p.lethal = false; leaveForm(w, p); }
   }
 
+  if (p.form === 'drill' && p.digOut) {
+    // Boring out after releasing the button. No steering, just forward.
+    let inside = false;
+    for (const b of w.bodies) {
+      if (b.kind !== 'plat' || b.dead || b.hidden > 0) continue;
+      if (overlapsBody(b, p.x, p.y, p.r * 0.55)) { inside = true; break; }
+    }
+    if (!inside) { p.digOut = false; p.vx *= 0.25; p.drillSpeed = 0; leaveForm(w, p); }
+    return;
+  }
   if (p.form === 'rock' || p.form === 'platform' || p.form === 'drill') return;
 
   if (p.form === 'roll') {
@@ -1312,6 +1379,11 @@ function stepPlayer(w, p, dt) {
     const want = target - rel;
     p.vx += clamp(want, -accel * dt, accel * dt);
     p.face = p.input.mx > 0 ? 1 : -1;
+    // Invisibility hides the body, not the footprints.
+    if (p.invis > 0 && p.grounded && Math.abs(p.vx) > 1.4) {
+      p.dust = (p.dust || 0) - dt;
+      if (p.dust <= 0) { p.dust = 0.11; w.events.push({ e: 'dust', x: p.x, y: p.y + p.r * 0.85 }); }
+    }
   } else if (p.grounded) {
     const damp = Math.min(1, TUNE.groundFriction * dt * (ground && ground.fric < 0.2 ? 0.08 : 1));
     p.vx -= rel * damp;
@@ -1390,6 +1462,9 @@ function hazards(w, dt) {
       if (b.kind === 'bopl' && !b.alive) continue;
       if (b.owner === p.pid && b.kind === 'arrow' && w.t - b.spawn < 0.14) continue;
       if (b.kind === 'bopl' && b.form === 'drill') continue;    // handled below, tip only
+      // A falling meteor cannot crush someone who is themselves a rock, a drill
+      // or mid-roll: those forms win the collision.
+      if (b.kind === 'bopl' && b.form === 'meteor' && (p.form === 'rock' || p.form === 'drill' || p.form === 'roll')) continue;
       if (!overlapsBody(b, p.x, p.y, p.r)) continue;
       kill(w, p, b.kind === 'bopl' ? b.form : b.kind, b.kind === 'bopl' ? b.pid : b.owner);
       if (b.kind === 'arrow' || b.kind === 'spike') { if (b.kind === 'arrow') b.dead = true; }
@@ -1411,12 +1486,18 @@ function hazards(w, dt) {
     for (let j = i + 1; j < coils.length; j++) {
       const a = coils[i], b = coils[j];
       if (a.owner !== b.owner || a.slot !== b.slot) continue;
+      // The arc blinks out briefly after it fires, then snaps back.
+      if (a.arcOff > 0 || b.arcOff > 0) continue;
       for (const p of w.players) {
         if (!vulnerable(p)) continue;
-        // The coils are yours; the arc between them is not going to bite you.
+        // These are your coils. Walking your own wire is not a death sentence.
         if (p.pid === a.owner) continue;
         const [cax, cay, cbx, cby] = closestSeg(a.x, a.y, b.x, b.y, p.x, p.y, p.x, p.y);
-        if (len(cbx - cax, cby - cay) < p.r + 0.3) kill(w, p, 'tesla', a.owner);
+        if (len(cbx - cax, cby - cay) < p.r + 0.3) {
+          kill(w, p, 'tesla', a.owner);
+          a.arcOff = 0.55; b.arcOff = 0.55;
+          w.events.push({ e: 'tesla', x: p.x, y: p.y });
+        }
       }
     }
   }
