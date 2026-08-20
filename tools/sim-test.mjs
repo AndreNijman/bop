@@ -553,7 +553,7 @@ check('Blink temporarily removes objects and disables hidden players', () => {
   assert.equal(target.slots[0].cd, 0, 'hidden player activated an ability');
 });
 
-check('Beam has startup, grapple survives release, and only growth reverts platforms', () => {
+check('Beam has startup, grapple pulls and survives release, and only growth reverts platforms', () => {
   const beamWorld = world([['beam'], []]);
   beamWorld.phase = 'play'; beamWorld.phaseT = 0; beamWorld.gravity = 0;
   beamWorld.bodies = beamWorld.bodies.filter(body => body.kind === 'bopl');
@@ -566,15 +566,23 @@ check('Beam has startup, grapple survives release, and only growth reverts platf
   assert.equal(target.alive, false, 'Beam never became active after startup');
 
   const grappleWorld = world([['grapple'], []]);
-  grappleWorld.phase = 'play'; grappleWorld.phaseT = 0;
+  grappleWorld.phase = 'play'; grappleWorld.phaseT = 0; grappleWorld.gravity = 0;
   const grappler = grappleWorld.players[0];
   const host = grappleWorld.bodies.find(body => body.kind === 'plat');
+  for (const body of grappleWorld.bodies) if (body.kind === 'plat' && body !== host) body.dead = true;
+  host.x = 0; host.y = -3; host.vx = 0; host.vy = 0; host.im = 0;
+  grappler.x = -5; grappler.y = -3; grappler.vx = 0; grappler.vy = 0; grappler.grounded = false;
   grappler.grappleId = host.id;
   grappler.grappleLx = 0; grappler.grappleLy = 0; grappler.grappleLen = 3;
   grappler.slots[0].state = 1;
   applyInput(grappler, idle);
   step(grappleWorld, TUNE.step);
+  assert.ok(grappler.vx > 0, `Grappling Hook pushed away from its anchor (${grappler.vx.toFixed(2)})`);
   assert.equal(grappler.grappleId, host.id, 'releasing Grappling Hook detached the rope');
+  const ropeLength = grappler.grappleLen;
+  applyInput(grappler, { ...idle, ab: [true, false, false] });
+  step(grappleWorld, TUNE.step);
+  assert.ok(grappler.grappleLen < ropeLength, 'holding Grappling Hook did not reel the rope in');
   applyInput(grappler, { ...idle, jump: true });
   step(grappleWorld, TUNE.step);
   assert.equal(grappler.grappleId, -1, 'jump did not release Grappling Hook');
@@ -661,7 +669,10 @@ check('every ability fires without breaking the world', () => {
     });
     assert.ok(fired, `${ability.id} never got a press`);
     const slot = p.slots[0];
-    if (p.alive) assert.ok(slot.cd > 0 || slot.state === 0, `${ability.id} left its slot in a stuck state`);
+    if (p.alive) {
+      const activeGrapple = ability.id === 'grapple' && p.grappleId !== -1;
+      assert.ok(slot.cd > 0 || slot.state === 0 || activeGrapple, `${ability.id} left its slot in a stuck state`);
+    }
   }
 });
 

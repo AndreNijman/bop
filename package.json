@@ -11,6 +11,7 @@
     "balance": "node tools/balance.mjs",
     "test:bots": "node tools/balance.mjs --mode melee -n 120 --quiet --assert-pacing",
     "test": "node tools/smoke.mjs",
+    "test:practice": "node tools/practice-smoke.mjs",
     "test:mp": "node tools/mp-smoke.mjs",
     "test:mp:live": "BASE_URL=https://bop.andrenijman.com LIVE_RELAY=https://bop-relay.tung-tung-tung-sahur.workers.dev node tools/mp-smoke.mjs",
     "deploy": "wrangler deploy"

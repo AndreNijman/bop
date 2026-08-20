@@ -5,12 +5,12 @@
 // live in sim.js, all the numbers live in data.js, so this file never decides
 // anything about the game itself.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260820-5';
-import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260820-5';
-import { createBrain, driveBot } from './bots.js?v=20260820-5';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20260820-5';
-import { createAudio } from './audio.js?v=20260820-5';
-import { createNet, fetchLobbies, relayBase } from './net.js?v=20260820-5';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260820-6';
+import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260820-6';
+import { createBrain, driveBot } from './bots.js?v=20260820-6';
+import { createRenderer, paintAbilityIcon } from './render.js?v=20260820-6';
+import { createAudio } from './audio.js?v=20260820-6';
+import { createNet, fetchLobbies, relayBase } from './net.js?v=20260820-6';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -498,6 +498,9 @@ function offlineStartRound() {
 function mapName(index) { return MAPS[clamp(index, 0, MAPS.length - 1)].name; }
 
 function offlineFinishRound() {
+  if (!G.world || G.world.offlineFinalized) return;
+  G.world.offlineFinalized = true;
+  const finishedWorld = G.world;
   const winner = G.world.winner;
   const winningPlayer = G.world.players.find(player => player.pid === winner);
   const winningTeam = winningPlayer?.team ?? -1;
@@ -517,7 +520,9 @@ function offlineFinishRound() {
   if (record && record.wins >= G.targetWins) { saveStats(); showResults(winner); return; }
   banner(winnerText(winner), null, 1.4);
   audio.play.round();
-  setTimeout(() => { if (G.mode === 'offline') openDraft(); }, 1200);
+  setTimeout(() => {
+    if (G.mode === 'offline' && G.world === finishedWorld) openDraft();
+  }, 1200);
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +667,7 @@ function renderDraft() {
 
 function choose(row) {
   if (row.picked) return;
+  const draft = G.draft;
   audio.play.pick();
   row.picked = true;
   if (G.mode === 'online') {
@@ -672,7 +678,17 @@ function choose(row) {
   const record = G.roster.find(r => r.pid === row.pid);
   if (record) record.abilities = [...row.held];
   renderDraft();
-  if (G.draft.rows.every(r => r.picked)) setTimeout(() => { if (G.mode === 'offline') offlineStartRound(); }, 260);
+  if (!draft.rows.every(r => r.picked)) return;
+  if (draft.midRound) {
+    G.draft = null;
+    show('play');
+    return;
+  }
+  setTimeout(() => {
+    if (G.mode !== 'offline' || G.draft !== draft) return;
+    G.draft = null;
+    offlineStartRound();
+  }, 260);
 }
 
 function tickDraft() {
@@ -725,6 +741,12 @@ function updateResultActions() {
 $('again').addEventListener('click', () => {
   if (G.mode === 'online') { G.net.send({ t: 'again' }); return; }
   for (const record of G.roster) { record.wins = 0; record.abilities = []; }
+  G.world = null;
+  G.draft = null;
+  G.brains.clear();
+  G.offline.mapHistory = [];
+  G.offline.rand = mulberry(Date.now() & 0xffff);
+  accumulator = 0;
   G.round = 0;
   G.lastWinner = -1;
   G.lastWinnerTeam = -1;
@@ -995,6 +1017,7 @@ $('chat-form').addEventListener('submit', event => {
 
 function buildWorld(setup, speculative = false) {
   G.world = createWorld(setup);
+  accumulator = 0;
   if (speculative) markSpeculative(G.world);
   G.wasAlive.clear();
   for (const player of G.world.players) G.wasAlive.set(player.id, true);
@@ -1220,6 +1243,15 @@ function frame(now) {
       steps++;
     }
 
+    if (G.mode === 'offline' && G.locals.length === 1) {
+      const localAlive = world.players.some(player => player.pid === G.you && player.alive);
+      if (G.authoritativeAlive && !localAlive) {
+        const player = world.players.find(candidate => candidate.pid === G.you);
+        if (player) openEliminatedSelect(player);
+      }
+      G.authoritativeAlive = localAlive;
+    }
+
     // Deaths that only the relay knows about still need a pop.
     for (const player of world.players) {
       const was = G.wasAlive.get(player.id);
@@ -1230,7 +1262,7 @@ function frame(now) {
       G.wasAlive.set(player.id, player.alive);
     }
 
-    if (G.mode === 'offline' && world.phase === 'over' && world.phaseT <= 0 && G.screen === 'play') {
+    if (G.mode === 'offline' && world.phase === 'over' && world.phaseT <= 0) {
       offlineFinishRound();
     }
   }

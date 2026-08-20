@@ -1286,9 +1286,11 @@ function channelAbility(w, p, slot, index, ab, dt) {
           const nx = dx / d, ny = dy / d;
           const rvn = (p.vx - host.vx) * nx + (p.vy - host.vy) * ny;
           const inv = p.im + host.im;
-          const raw = (-rvn - (d - p.grappleLen) * 4.5) / inv;
+          // Rope impulses may pull but never push. `nx` points from the bopl to
+          // the anchor, so positive impulse closes an overstretched rope.
+          const raw = ((d - p.grappleLen) * 4.5 - rvn) / inv;
           const cap = 9 / Math.max(p.im, 1e-6);
-          const j = clamp(raw, -cap, cap);
+          const j = clamp(raw, 0, cap);
           p.vx += nx * j * p.im; p.vy += ny * j * p.im;
           host.vx -= nx * j * host.im; host.vy -= ny * j * host.im;
           if (host.kind === 'plat') host.anchorOff = Math.max(host.anchorOff, 0.12);
