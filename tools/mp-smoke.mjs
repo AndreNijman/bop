@@ -47,13 +47,13 @@ try {
     const page = await context.newPage();
     page.on('pageerror', e => problems.push(`p${i} page error: ${e.message}`));
     page.on('console', m => { if (m.type() === 'error') problems.push(`p${i} console: ${m.text()}`); });
-    await page.goto(`${baseUrl}/?relay=${encodeURIComponent(relay)}`);
-    const guest = page.locator('.skip button');
-    if (await guest.isVisible().catch(() => false)) {
+    const gameUrl = `${baseUrl}/?_games_frame=1&relay=${encodeURIComponent(relay)}`;
+    await page.goto(gameUrl);
+    if (await page.locator('.skip button').count()) {
       await context.request.post('https://games.andrenijman.com/_guard/skip', {
         form: { name: 'BOP multiplayer smoke', return: `${baseUrl}/` }, maxRedirects: 0,
       });
-      await page.goto(`${baseUrl}/?relay=${encodeURIComponent(relay)}`);
+      await page.goto(gameUrl);
     }
     await page.locator('#landing').waitFor({ state: 'visible' });
     pages.push(page);

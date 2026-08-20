@@ -904,8 +904,8 @@ function updateHud() {
   if (player) {
     canvas.dataset.testPlayer = JSON.stringify({
       x: Math.round(player.x * 100) / 100, y: Math.round(player.y * 100) / 100,
-      alive: player.alive, form: player.form, size: player.size,
-      slots: player.slots.map(s => ({ id: s.id, cd: Math.round(s.cd * 100) / 100 })),
+      alive: player.alive, form: player.form, size: player.size, grounded: player.grounded,
+      slots: player.slots.map(s => ({ id: s.id, cd: Math.round(s.cd * 100) / 100, state: s.state })),
     });
     delete canvas.dataset.renderError;
   } else canvas.dataset.renderError = 'no local player';

@@ -9,8 +9,12 @@ import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 
 const headed = process.argv.includes('--headed');
-const url = process.argv.find(a => a.startsWith('http')) || 'http://127.0.0.1:4173';
+const target = process.argv.find(a => a.startsWith('http')) || 'http://127.0.0.1:4173';
 const own = !process.argv.find(a => a.startsWith('http'));
+// Hosted games are served inside the site's iframe shell. `_games_frame=1` is
+// how the guard hands back the game itself, which is what we want to drive.
+const url = new URL(target);
+url.searchParams.set('_games_frame', '1');
 const server = own ? spawn('npx', ['serve', '.', '-l', '4173'], { stdio: 'ignore' }) : null;
 
 async function ready(target) {
@@ -24,21 +28,21 @@ async function ready(target) {
 const problems = [];
 const browser = await chromium.launch({ headless: !headed });
 try {
-  if (own) await ready(url);
+  if (own) await ready(target);
   const page = await browser.newPage({ viewport: { width: 1366, height: 768 } });
   page.on('console', m => { if (m.type() === 'error') problems.push(`console: ${m.text()}`); });
   page.on('pageerror', e => problems.push(`page error: ${e.message}`));
   page.on('requestfailed', r => problems.push(`request failed: ${r.url()}`));
 
-  await page.goto(url, { waitUntil: 'networkidle' });
+  await page.goto(url.toString(), { waitUntil: 'networkidle' });
 
   // The guard sits in front of production; take the guest door.
   const guest = page.locator('.skip button');
-  if (await guest.isVisible().catch(() => false)) {
+  if (await guest.count()) {
     await page.context().request.post('https://games.andrenijman.com/_guard/skip', {
-      form: { name: 'BOP smoke', return: url }, maxRedirects: 0,
+      form: { name: 'BOP smoke', return: target }, maxRedirects: 0,
     });
-    await page.goto(url, { waitUntil: 'networkidle' });
+    await page.goto(url.toString(), { waitUntil: 'networkidle' });
   }
 
   await page.locator('#landing').waitFor({ state: 'visible' });
@@ -89,30 +93,55 @@ try {
   const tickB = await page.evaluate(() => window.BOP.state().tick);
   if (tickB - tickA < 20) problems.push(`simulation is not stepping (${tickA} -> ${tickB})`);
 
-  // Drive the real input path so key handling is covered.
+  // Drive the real input path so key handling is covered. The draft is random
+  // and there are bots in the arena, so the local bopl may already be gone;
+  // that is not a failure, it just makes the movement check meaningless.
   const before = JSON.parse(await page.locator('#game').getAttribute('data-test-player'));
   await page.keyboard.down('KeyD');
   await page.waitForTimeout(700);
   await page.keyboard.up('KeyD');
-  const after = JSON.parse(await page.locator('#game').getAttribute('data-test-player'));
-  if (!(after.x > before.x + 0.3)) problems.push(`holding D did not move the bopl (${before.x} -> ${after.x})`);
+  const moved = JSON.parse(await page.locator('#game').getAttribute('data-test-player'));
+  const stillPlaying = before.alive && moved.alive && (await page.evaluate(() => window.BOP.state().phase)) === 'play';
+  if (stillPlaying && moved.form === 'normal' && before.form === 'normal') {
+    if (!(moved.x > before.x + 0.3)) {
+      problems.push(`holding D did not move the bopl (${before.x} -> ${moved.x}, form ${moved.form})`);
+    }
+  } else {
+    console.log(`  note: movement check skipped (alive ${before.alive}->${moved.alive}, form ${before.form}->${moved.form})`);
+  }
 
   await page.keyboard.down('KeyW');
   await page.waitForTimeout(120);
   await page.keyboard.up('KeyW');
   await page.waitForTimeout(200);
 
-  // Fire the first ability with the mouse and confirm it goes on cooldown.
-  await page.mouse.move(1000, 300);
-  await page.mouse.down();
-  await page.waitForTimeout(1200);
-  await page.mouse.up();
-  await page.waitForTimeout(300);
-  const used = await page.evaluate(() => {
-    const player = JSON.parse(document.querySelector('#game').dataset.testPlayer);
-    return player.slots[0];
-  });
-  if (!used || used.cd <= 0) problems.push(`ability ${used?.id} never went on cooldown after use`);
+  // Fire the first ability with the mouse. Engine, Spike, Tesla Coil, Throw and
+  // Push are placement abilities that correctly do nothing unless the bopl is
+  // standing on terrain, so the check retries and takes footing into account.
+  const PLACEMENT = new Set(['engine', 'spike', 'tesla', 'throw', 'push']);
+  let after = await page.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer));
+  let fired = false;
+  let everGrounded = false;
+  for (let attempt = 0; attempt < 5 && !fired; attempt++) {
+    await page.mouse.move(1000, 300 + attempt * 20);
+    await page.mouse.down();
+    await page.waitForTimeout(900);
+    await page.mouse.up();
+    await page.waitForTimeout(250);
+    after = await page.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer));
+    if (!after.alive) break;
+    everGrounded = everGrounded || after.grounded;
+    const slot = after.slots[0];
+    fired = !!slot && (slot.cd > 0 || slot.state === 1 || after.form !== 'normal');
+  }
+  const slot = after.slots[0];
+  if (!after.alive) {
+    console.log('  note: the bots got us before the ability check, cooldown assertion skipped');
+  } else if (!fired && PLACEMENT.has(slot?.id) && !everGrounded) {
+    console.log(`  note: ${slot.id} needs footing and we never landed, assertion skipped`);
+  } else if (!fired) {
+    problems.push(`ability ${slot?.id} did not fire: ${JSON.stringify(slot)} grounded=${everGrounded}`);
+  }
 
   if (await page.locator('#game').getAttribute('data-render-error')) problems.push('renderer lost the local player');
 
