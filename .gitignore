@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+test-results/
+playwright-report/
+special.special
+shots/
+*.log

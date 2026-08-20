@@ -1,0 +1,22 @@
+{
+  "name": "squish",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A physics platform brawler for the browser with online multiplayer",
+  "scripts": {
+    "dev": "wrangler dev",
+    "serve": "npx serve . -l 4173",
+    "check": "node --check game.js && node --check worker.js && node --check sim.js && node tools/sim-test.mjs",
+    "balance": "node tools/balance.mjs",
+    "test": "node tools/smoke.mjs",
+    "test:mp": "node tools/mp-smoke.mjs",
+    "test:mp:live": "BASE_URL=https://squish.andrenijman.com LIVE_RELAY=https://squish-relay.tung-tung-tung-sahur.workers.dev node tools/mp-smoke.mjs",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "serve": "^14.2.4",
+    "wrangler": "^4.33.1"
+  }
+}

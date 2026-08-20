@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>BOP — physics brawler with 29 abilities</title>
+<meta name="description" content="A browser physics brawler. Draft wild abilities between rounds, squish your friends off floating platforms, last bopl standing wins. Free, online multiplayer, no download." />
+<meta name="theme-color" content="#14111c" />
+<link rel="canonical" href="https://bop.andrenijman.com/" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="BOP — physics brawler with 29 abilities" />
+<meta property="og:description" content="Draft wild abilities between rounds and squish your friends off the map. Free browser multiplayer." />
+<meta property="og:url" content="https://bop.andrenijman.com/" />
+<meta property="og:image" content="https://bop.andrenijman.com/og-image.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="stylesheet" href="style.css?v=20260820-1" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='34' r='24' fill='%23ff6b5e' stroke='%23c93f36' stroke-width='5'/%3E%3Ccircle cx='24' cy='28' r='7' fill='%23fff'/%3E%3Ccircle cx='42' cy='28' r='7' fill='%23fff'/%3E%3Ccircle cx='25' cy='29' r='3' fill='%231b1725'/%3E%3Ccircle cx='43' cy='29' r='3' fill='%231b1725'/%3E%3C/svg%3E" />
+</head>
+<body>
+
+<main id="stage">
+  <canvas id="game" aria-label="Game arena"></canvas>
+
+  <!-- In-round HUD -->
+  <div id="hud" hidden>
+    <div id="hud-top">
+      <div id="scoreboard"></div>
+      <div id="round-clock"><span id="clock-value">2:00</span></div>
+      <button id="mute" class="chip" type="button" title="Mute (M)">sound on</button>
+    </div>
+    <div id="banner"></div>
+    <div id="hud-bottom">
+      <div id="slots"></div>
+      <div id="hud-tips">
+        <span><b>A</b>/<b>D</b> move</span><span><b>W</b> jump</span><span>mouse aims</span>
+      </div>
+    </div>
+    <div id="net-info"></div>
+  </div>
+
+  <!-- Menus -->
+  <div id="menus">
+
+    <section id="landing" class="screen">
+      <div class="brand">
+        <canvas id="brand-bopl" width="132" height="132" aria-hidden="true"></canvas>
+        <div>
+          <h1>BOP</h1>
+          <p class="tag">Squish your friends off a floating rock. 29 abilities, drafted one at a time.</p>
+        </div>
+      </div>
+      <label class="field">
+        <span>your name</span>
+        <input id="player-name" maxlength="14" placeholder="bopl" autocomplete="off" />
+      </label>
+      <div class="row">
+        <button id="play-offline" class="primary" type="button">Practice vs bots</button>
+        <button id="play-online" class="primary" type="button">Play online</button>
+      </div>
+      <div class="row">
+        <button id="open-couch" class="ghost" type="button">Couch multiplayer</button>
+        <button id="open-abilities" class="ghost" type="button">All 29 abilities</button>
+        <button id="open-help" class="ghost" type="button">How to play</button>
+      </div>
+      <p class="fineprint">No download, no account needed. Runs on the keyboard, on a gamepad, or on a phone.</p>
+    </section>
+
+    <section id="online" class="screen" hidden>
+      <header class="screen-head">
+        <button class="back" type="button" data-back="landing">back</button>
+        <h2>Online</h2>
+      </header>
+      <div class="split">
+        <div class="panel">
+          <h3>Open lobbies</h3>
+          <div id="lobby-list" class="list"><p class="empty">looking for lobbies…</p></div>
+          <button id="refresh-lobbies" class="ghost small" type="button">refresh</button>
+        </div>
+        <div class="panel">
+          <h3>Host a lobby</h3>
+          <form id="create-form" autocomplete="off">
+            <label class="field"><span>lobby name</span><input id="room-name" maxlength="24" placeholder="rock bottom" required /></label>
+            <label class="field"><span>password (optional)</span><input id="room-password" maxlength="32" type="password" /></label>
+            <div class="grid3">
+              <label class="field"><span>players</span>
+                <select id="room-max"><option>2</option><option>3</option><option>4</option><option>5</option><option selected>6</option><option>7</option><option>8</option></select>
+              </label>
+              <label class="field"><span>bots</span>
+                <select id="room-bots"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+              </label>
+              <label class="field"><span>wins</span>
+                <select id="room-wins"><option>3</option><option selected>5</option><option>7</option><option>10</option></select>
+              </label>
+            </div>
+            <button class="primary" type="submit">Create lobby</button>
+          </form>
+          <h3>Join by name</h3>
+          <form id="join-form" autocomplete="off">
+            <label class="field"><span>lobby name</span><input id="join-name" maxlength="24" required /></label>
+            <label class="field"><span>password</span><input id="join-password" maxlength="32" type="password" /></label>
+            <button class="ghost" type="submit">Join</button>
+          </form>
+          <p id="online-error" class="error" role="status"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="couch" class="screen" hidden>
+      <header class="screen-head">
+        <button class="back" type="button" data-back="landing">back</button>
+        <h2>Couch multiplayer</h2>
+      </header>
+      <p class="lede">Player one plays on the keyboard and mouse. Plug in gamepads for players two, three and four — they are picked up automatically.</p>
+      <div id="pad-list" class="list"></div>
+      <div class="grid3">
+        <label class="field"><span>humans</span><select id="couch-humans"></select></label>
+        <label class="field"><span>bots</span>
+          <select id="couch-bots"><option>0</option><option>1</option><option selected>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+        </label>
+        <label class="field"><span>wins</span>
+          <select id="couch-wins"><option>3</option><option selected>5</option><option>7</option><option>10</option></select>
+        </label>
+      </div>
+      <button id="couch-start" class="primary" type="button">Start</button>
+    </section>
+
+    <section id="lobby" class="screen" hidden>
+      <header class="screen-head">
+        <button class="back" type="button" data-leave="1">leave</button>
+        <h2>Lobby <span id="lobby-name"></span></h2>
+      </header>
+      <div class="split">
+        <div class="panel">
+          <h3>Bopls</h3>
+          <div id="roster" class="list"></div>
+        </div>
+        <div class="panel">
+          <h3>Host settings</h3>
+          <div id="host-settings" class="grid3">
+            <label class="field"><span>players</span>
+              <select id="set-max"><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option></select>
+            </label>
+            <label class="field"><span>bots</span>
+              <select id="set-bots"><option>0</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+            </label>
+            <label class="field"><span>wins</span>
+              <select id="set-wins"><option>3</option><option>5</option><option>7</option><option>10</option></select>
+            </label>
+          </div>
+          <button id="start-match" class="primary" type="button">Start match</button>
+          <p id="lobby-hint" class="fineprint"></p>
+          <h3>Chat</h3>
+          <div id="chat-log" class="chat"></div>
+          <form id="chat-form" autocomplete="off"><input id="chat-input" maxlength="120" placeholder="say something" /></form>
+        </div>
+      </div>
+    </section>
+
+    <section id="draft" class="screen" hidden>
+      <header class="screen-head">
+        <h2>Round <span id="draft-round">1</span> — pick an ability</h2>
+        <span id="draft-timer" class="chip"></span>
+      </header>
+      <div id="draft-rows"></div>
+      <div id="draft-standings" class="standings"></div>
+    </section>
+
+    <section id="results" class="screen" hidden>
+      <h2 id="results-title">Match over</h2>
+      <div id="results-standings" class="standings"></div>
+      <div class="row">
+        <button id="again" class="primary" type="button">Play again</button>
+        <button id="to-lobby" class="ghost" type="button">Back to lobby</button>
+        <button id="to-menu" class="ghost" type="button">Main menu</button>
+      </div>
+    </section>
+
+    <section id="abilities" class="screen" hidden>
+      <header class="screen-head">
+        <button class="back" type="button" data-back="landing">back</button>
+        <h2>Abilities</h2>
+      </header>
+      <div id="ability-grid" class="ability-grid"></div>
+    </section>
+
+    <section id="help" class="screen" hidden>
+      <header class="screen-head">
+        <button class="back" type="button" data-back="landing">back</button>
+        <h2>How to play</h2>
+      </header>
+      <div class="help-body">
+        <h3>The round</h3>
+        <p>Every round starts with a draft: three abilities are offered, you keep one. You carry three at a time, so from the fourth round on you decide which one to throw away. Last bopl alive wins the round. First to the win target takes the match.</p>
+        <h3>Dying</h3>
+        <p>There is no health bar. You die by leaving the arena, hitting the water, getting crushed between two solid things, being eaten by something two sizes bigger, or touching anything genuinely lethal — an arrow, a spike, a rolling player, a drill bit, an explosion.</p>
+        <h3>Controls</h3>
+        <table class="keys">
+          <tr><td><b>A</b> <b>D</b> or arrows</td><td>move</td></tr>
+          <tr><td><b>W</b> / <b>Space</b></td><td>jump (also lets go of a grapple)</td></tr>
+          <tr><td>mouse</td><td>aim everything</td></tr>
+          <tr><td>left click / <b>J</b></td><td>ability one</td></tr>
+          <tr><td>right click / <b>K</b></td><td>ability two</td></tr>
+          <tr><td>middle click / <b>L</b></td><td>ability three</td></tr>
+          <tr><td><b>M</b></td><td>mute</td></tr>
+          <tr><td>gamepad</td><td>left stick moves, right stick aims, <b>A</b> jumps, <b>X</b>/<b>B</b>/<b>Y</b> are the three abilities</td></tr>
+        </table>
+        <h3>Reading the arena</h3>
+        <p>Platforms with glowing yellow studs travel on a fixed path. Dashed outlines float free and can be shoved anywhere. Pale blue platforms are ice and give almost no grip. Space arenas have low gravity and no water to fall into. Terrain springs back toward where it started unless something cuts it loose.</p>
+        <h3>Sudden death</h3>
+        <p>Two minutes in, the death barrier starts closing and the terrain begins to shrink. Nobody stalls forever.</p>
+      </div>
+    </section>
+
+  </div>
+
+  <div id="toast" role="status"></div>
+</main>
+
+<script type="module" src="game.js?v=20260820-1"></script>
+</body>
+</html>
