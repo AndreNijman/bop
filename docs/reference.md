@@ -33,6 +33,9 @@ Detailed secondary sources:
 - [Clones](https://bopl-battle.fandom.com/api.php?action=parse&page=Clones&prop=wikitext&format=json)
 - [Eating](https://bopl-battle.fandom.com/api.php?action=parse&page=Eating&prop=wikitext&format=json)
 - [One-time use](https://bopl-battle.fandom.com/api.php?action=parse&page=One-time_Use&prop=wikitext&format=json)
+- [Beginner movement guide](https://www.youtube.com/watch?v=pVm0KWU6Dos&t=109s)
+- [Four-direction surface controls](https://steamcommunity.com/app/1686940/discussions/0/4029095737387664628/)
+- [Alternate relative-control request](https://steamcommunity.com/app/1686940/discussions/0/4428814058381804743/)
 
 Every named ability below also has a specific page at
 `https://bopl-battle.fandom.com/api.php?action=parse&page=<name>&prop=wikitext&format=json`.
@@ -50,7 +53,7 @@ Every named ability below also has a specific page at
 | Objective | Last surviving bopl or team wins the round. Matches accumulate round wins. | Official store |
 | Teams | Free-for-all and team-vs-team are supported. Time Stop leaves the caster's team active; mines do not acquire teammates. | Official store/2.2.4 plus wiki |
 | Team formation | Players choose colors before the match. Bopls with the same color are teammates; unique colors produce free-for-all and matching colors permit uneven teams. | Current-build gameplay |
-| Surface movement | Bopls adhere to every side of terrain and ooze around undersides. Movement is surface-relative; jumping launches along the local outward normal. | Published review plus gameplay |
+| Surface movement | Bopls adhere to every side of terrain. WASD/left-stick input stays screen-relative and is projected onto the surface: traversing clockwise over a top, right end, and underside requires right, down, then left. Jumping blends upward and outward motion on sides; an underside jump only detaches and drops. | Tutorial footage plus two independent control reports |
 | Grass | Water, stationary terrain, and moving terrain. Round one always uses the same Grass arena. | Maps wiki/gameplay |
 | Ice | Water, ordinary snow and slippery ice. Ice arenas do not use moving terrain. | Maps wiki/gameplay |
 | Space | No water, low gravity, anchored spherical moons, and freely moving satellite-like platforms. | Maps wiki/gameplay |
@@ -120,7 +123,8 @@ The following exact values are not published and should be measured from current
 limit, ray startup, Time Stop freeze duration, Smoke cloud lifetime, Platform maximum,
 Roll charge/duration, Black Hole lifetime, Meteor threshold, Tesla duty cycle/lifetime,
 Mine pursuit duration, Teleport marker lifetime, grapple range/reel rate, Duplicator
-startup, Magnet overcharge, and the exact sudden-death wave curve.
+startup, Magnet overcharge, the exact side-jump up/out force blend, and the exact
+sudden-death wave curve.
 
 The current Beam page and official 2.2.2 note conflict on whether Beam moves the
 platform supporting the caster. Do not resolve this by assumption.

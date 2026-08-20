@@ -167,6 +167,29 @@ button { -webkit-tap-highlight-color: transparent; }
 
 #slots { display: flex; gap: clamp(6px, 0.9vmin, 10px); }
 
+#touch-jump {
+  display: none;
+  width: 58px;
+  min-width: 58px;
+  min-height: 58px;
+  margin-left: auto;
+  border: 3px solid #0d0a12;
+  border-radius: 6px;
+  background: var(--yellow);
+  box-shadow: 4px 4px 0 rgba(13, 10, 18, 0.68);
+  color: var(--graphite);
+  font: 800 11px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  pointer-events: auto;
+  text-transform: uppercase;
+  touch-action: none;
+}
+
+#touch-jump:active {
+  box-shadow: 2px 2px 0 rgba(13, 10, 18, 0.68);
+  transform: translate(2px, 2px);
+}
+
 .slot {
   position: relative;
   display: grid;
@@ -735,6 +758,7 @@ button.color-choice.selected { outline: 2px solid var(--cream); outline-offset: 
   button { min-height: 46px; }
   button.back { min-width: 56px; min-height: 44px; }
   .held-slot, .slot { width: max(52px, 7.2vmin); }
+  #touch-jump { display: grid; place-items: center; }
   button.color-choice { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }
 }
 

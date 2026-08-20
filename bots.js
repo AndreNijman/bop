@@ -282,6 +282,9 @@ export function driveBot(w, p, brain, dt) {
   }
 
   p.input.mx = moveX;
+  p.input.my = p.grounded ? -Math.abs(p.groundNx) : 0;
+  const moveLength = Math.hypot(p.input.mx, p.input.my);
+  if (moveLength > 1) { p.input.mx /= moveLength; p.input.my /= moveLength; }
   brain.jumpT = Math.max(0, brain.jumpT - dt);
   if (wantJump && brain.jumpT <= 0 && p.grounded) { brain.jumpT = 0.28; p.input.jump = true; }
   else p.input.jump = wantJump && brain.jumpT > 0.14;
@@ -339,7 +342,9 @@ export function driveBot(w, p, brain, dt) {
         if (!target || gap > 8) break;
         const dx = target.x - p.x;
         const above = target.y > p.y + 0.25 && Math.abs(dx) < (p.grounded ? 1.4 : 2.4);
-        if (above) { fire = true; hold = ab.charge * 0.7; }
+        // Release quickly once aligned; a long charge gives a moving target
+        // enough time to leave the strictly vertical strike line.
+        if (above) { fire = true; hold = ab.charge * 0.18; }
         else if (Math.abs(dx) < 5) brain.commit = { dir: Math.sign(dx), t: 0.4, jump: target.y >= p.y - 0.3 };
         break;
       }
@@ -399,7 +404,17 @@ export function driveBot(w, p, brain, dt) {
       }
       case 'gust': if (threat || (target && gap < ab.radius * 0.85)) fire = true; break;
       case 'invis': if (threat || (target && gap < 5)) fire = true; break;
-      case 'mine': if (p.grounded && (!target || gap > 2.2)) fire = true; break;
+      case 'mine': {
+        if (p.grounded && (!target || gap > 2.2)) {
+          fire = true;
+          brain.commit = {
+            dir: target ? -(Math.sign(target.x - p.x) || 1) : -brain.dir,
+            t: 0.55,
+            jump: true,
+          };
+        }
+        break;
+      }
       case 'spike': if (p.grounded && target && gap < 8) fire = true; break;
       case 'tesla': {
         if (!p.grounded) break;

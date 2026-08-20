@@ -153,6 +153,9 @@ try {
       for (let slot = 0; slot < 3; slot++) await pages[i].locator('#draft .card[data-ability="dash"]').click();
     } else if (i === 1) {
       await pages[i].locator('#draft .clear-slot').click();
+      // A relay timer update used to overwrite unsubmitted local edits. Wait
+      // long enough to receive one before confirming the empty slot.
+      await pages[i].waitForTimeout(1300);
     } else await pages[i].locator('#draft .card').nth(i + 1).click();
     await pages[i].locator('#draft .ready-loadout').click();
   }

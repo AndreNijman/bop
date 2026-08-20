@@ -214,7 +214,7 @@ export class GameRoom {
         const players = this.world?.players.filter(p => p.pid === session.pid) || [];
         if (players.length && this.phase === 'round') {
           const input = {
-            mx: message.mx, jump: message.jump, ax: message.ax, ay: message.ay,
+            mx: message.mx, my: message.my, jump: message.jump, ax: message.ax, ay: message.ay,
             ab: Array.isArray(message.ab) ? message.ab.slice(0, TUNE.slots) : [],
           };
           for (const player of players) applyInput(player, input);

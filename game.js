@@ -5,12 +5,12 @@
 // live in sim.js, all the numbers live in data.js, so this file never decides
 // anything about the game itself.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260820-3';
-import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260820-3';
-import { createBrain, driveBot } from './bots.js?v=20260820-3';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20260820-3';
-import { createAudio } from './audio.js?v=20260820-3';
-import { createNet, fetchLobbies, relayBase } from './net.js?v=20260820-3';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260820-4';
+import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260820-4';
+import { createBrain, driveBot } from './bots.js?v=20260820-4';
+import { createRenderer, paintAbilityIcon } from './render.js?v=20260820-4';
+import { createAudio } from './audio.js?v=20260820-4';
+import { createNet, fetchLobbies, relayBase } from './net.js?v=20260820-4';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -18,7 +18,7 @@ const renderer = createRenderer(canvas);
 const audio = createAudio();
 
 const SLOT_KEYS = ['KeyJ', 'KeyK', 'KeyL'];
-const SLOT_LABELS = ['LMB', 'RMB', 'MMB'];
+const SLOT_LABELS = ['LMB / J', 'RMB / K', 'MMB / L'];
 const PAD_SLOT_BUTTONS = [2, 1, 3];          // X, B, Y on a standard layout
 
 const G = {
@@ -66,7 +66,12 @@ addEventListener('keydown', event => {
   audio.resume();
 });
 addEventListener('keyup', event => keys.delete(event.code));
-addEventListener('blur', () => { keys.clear(); pointer.buttons = [false, false, false]; });
+addEventListener('blur', () => {
+  keys.clear();
+  pointer.buttons = [false, false, false];
+  touch.jump = false;
+  touch.slots.fill(false);
+});
 
 canvas.addEventListener('contextmenu', event => event.preventDefault());
 canvas.addEventListener('pointerdown', event => {
@@ -108,6 +113,17 @@ function handleTouchUp(event) {
   if (touch.aim && touch.aim.id === event.pointerId) touch.aim = null;
 }
 
+const touchJump = $('touch-jump');
+touchJump.addEventListener('pointerdown', event => {
+  event.preventDefault();
+  usingTouch = true;
+  touch.jump = true;
+  touchJump.setPointerCapture?.(event.pointerId);
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  touchJump.addEventListener(type, () => { touch.jump = false; });
+}
+
 function worldPoint(sx, sy) {
   const scale = renderer.lastScale || 1;
   return [(sx - canvas.clientWidth / 2) / scale, (sy - canvas.clientHeight / 2) / scale];
@@ -116,18 +132,21 @@ function worldPoint(sx, sy) {
 function pads() { return navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : []; }
 
 function readLocalInput(local, player) {
-  const input = { mx: 0, jump: false, ax: player ? player.input.ax : 1, ay: player ? player.input.ay : 0, ab: [false, false, false] };
+  const input = { mx: 0, my: 0, jump: false, ax: player ? player.input.ax : 1, ay: player ? player.input.ay : 0, ab: [false, false, false] };
   if (local.source === 'kb') {
     if (keys.has('KeyA') || keys.has('ArrowLeft')) input.mx -= 1;
     if (keys.has('KeyD') || keys.has('ArrowRight')) input.mx += 1;
-    input.jump = keys.has('KeyW') || keys.has('Space') || keys.has('ArrowUp') || touch.jump;
+    if (keys.has('KeyW') || keys.has('ArrowUp')) input.my -= 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) input.my += 1;
+    input.jump = keys.has('Space') || touch.jump;
     for (let i = 0; i < TUNE.slots; i++) input.ab[i] = pointer.buttons[i] || keys.has(SLOT_KEYS[i]) || touch.slots[i];
     if (usingTouch) {
       if (touch.move) {
         const dx = touch.move.x - touch.move.ox;
+        const dy = touch.move.y - touch.move.oy;
         input.mx = clamp(dx / 42, -1, 1);
-        if (Math.abs(input.mx) < 0.22) input.mx = 0;
-        if (touch.move.y - touch.move.oy < -34) input.jump = true;
+        input.my = clamp(dy / 42, -1, 1);
+        if (Math.hypot(input.mx, input.my) < 0.22) { input.mx = 0; input.my = 0; }
       }
       if (touch.aim && player) {
         const dx = touch.aim.x - touch.aim.ox, dy = touch.aim.y - touch.aim.oy;
@@ -147,7 +166,8 @@ function readLocalInput(local, player) {
   const lx = pad.axes[0] || 0, ly = pad.axes[1] || 0;
   const rx = pad.axes[2] || 0, ry = pad.axes[3] || 0;
   input.mx = Math.abs(lx) > 0.24 ? clamp(lx, -1, 1) : 0;
-  input.jump = !!pad.buttons[0]?.pressed || ly < -0.6;
+  input.my = Math.abs(ly) > 0.24 ? clamp(ly, -1, 1) : 0;
+  input.jump = !!pad.buttons[0]?.pressed;
   if (Math.hypot(rx, ry) > 0.3) { input.ax = rx; input.ay = ry; }
   else if (Math.hypot(lx, ly) > 0.5) { input.ax = lx; input.ay = ly; }
   for (let i = 0; i < TUNE.slots; i++) {
@@ -841,17 +861,21 @@ function handleServer(message) {
       return;
     }
     case 'draft': {
+      const previousDraft = G.draft;
+      const previousRow = previousDraft?.rows.find(row => row.pid === G.you);
+      const keepLocalEdit = previousDraft?.round === message.round && previousRow && !previousRow.picked && !message.ready;
       G.round = message.round - 1;
       G.lastWinner = message.winner ?? -1;
       G.lastWinnerTeam = message.winnerTeam ?? -1;
       G.roster = mergeRoster(message.players);
       G.draft = {
+        round: message.round,
         rows: message.editable
           ? [{
             pid: G.you,
-            held: editableLoadout(message.held),
+            held: keepLocalEdit ? [...previousRow.held] : editableLoadout(message.held),
             picked: message.ready,
-            slot: 0,
+            slot: keepLocalEdit ? previousRow.slot : 0,
           }]
           : [],
         left: message.left,
@@ -1008,7 +1032,11 @@ function buildSlots() {
     key.textContent = SLOT_LABELS[i];
     slot.append(cool, charge, key);
     slot.style.pointerEvents = 'auto';
-    slot.addEventListener('pointerdown', event => { event.preventDefault(); touch.slots[i] = true; });
+    slot.addEventListener('pointerdown', event => {
+      event.preventDefault();
+      if (event.pointerType === 'touch') usingTouch = true;
+      touch.slots[i] = true;
+    });
     slot.addEventListener('pointerup', () => { touch.slots[i] = false; });
     slot.addEventListener('pointerleave', () => { touch.slots[i] = false; });
     wrap.appendChild(slot);

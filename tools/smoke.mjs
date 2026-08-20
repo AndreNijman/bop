@@ -91,6 +91,8 @@ try {
   if (early.alive !== 4) problems.push(`expected 4 bopls at the start, saw ${early.alive}`);
   if (!early.bodies || early.bodies < 8) problems.push(`world only had ${early.bodies} bodies`);
   if (await page.locator('#slots .slot').count() !== 3) problems.push('HUD is missing ability slots');
+  const slotLabels = await page.locator('#slots .slot .key').allTextContents();
+  if (slotLabels.join(',') !== 'LMB / J,RMB / K,MMB / L') problems.push(`HUD has incorrect ability bindings: ${slotLabels.join(', ')}`);
   if (await page.locator('#scoreboard .score').count() !== 4) problems.push('scoreboard does not list every bopl');
 
   // The simulation must actually be advancing.

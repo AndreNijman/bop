@@ -37,8 +37,8 @@ extension; it is not part of the reference game's vanilla rules.
 
 | Input | Does |
 | --- | --- |
-| `A` `D` or arrows | move |
-| `W` / `Space` | jump, and lets go of a grapple |
+| `WASD` or arrows | move in screen directions around terrain |
+| `Space` | jump, and lets go of a grapple |
 | mouse | aims everything |
 | left click / `J` | ability one |
 | right click / `K` | ability two |

@@ -79,7 +79,7 @@ export function createNet(handlers) {
     sendTimer -= dt;
     if (sendTimer > 0) return;
     sendTimer = interval;
-    send({ t: 'input', mx: input.mx, jump: input.jump, ax: input.ax, ay: input.ay, ab: input.ab });
+    send({ t: 'input', mx: input.mx, my: input.my, jump: input.jump, ax: input.ax, ay: input.ay, ab: input.ab });
     pingAt = performance.now();
     send({ t: 'ping', c: 1 });
   }

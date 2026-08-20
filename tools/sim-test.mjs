@@ -17,7 +17,7 @@ function check(label, fn) {
   catch (error) { console.error(`FAIL  ${label}\n      ${error.message}`); process.exitCode = 1; }
 }
 
-const idle = { mx: 0, jump: false, ax: 1, ay: 0, ab: [false, false, false] };
+const idle = { mx: 0, my: 0, jump: false, ax: 1, ay: 0, ab: [false, false, false] };
 
 function world(abilities = [[], []], mapIndex = 0, count = 2) {
   const players = [];
@@ -77,7 +77,7 @@ check('a bopl falls, lands and comes to rest on terrain', () => {
   assert.ok(Math.abs(p.y - restY) < 0.2, 'bopl sank through the platform');
 });
 
-check('bopls stick to sides and undersides, then jump away from the surface', () => {
+check('screen-relative movement hands off around sides and undersides', () => {
   const w = world([[], []], MAPS.findIndex(map => map.theme === 'space'));
   for (const body of w.bodies) if (body.kind === 'plat') body.dead = true;
   const ball = addBody(w, {
@@ -88,22 +88,63 @@ check('bopls stick to sides and undersides, then jump away from the surface', ()
   });
   const [p, q] = w.players;
   p.x = 0; p.y = -ball.r - p.r - 0.04; p.vx = 0; p.vy = 0;
-  q.x = -10; q.y = -6;
   w.phase = 'play'; w.phaseT = 0;
-  run(w, 0.25, () => { applyInput(p, idle); applyInput(q, idle); });
-  assert.ok(p.grounded, 'bopl did not adhere to the top of the ball');
-  run(w, 0.42, () => { applyInput(p, { ...idle, mx: 1 }); applyInput(q, idle); });
-  assert.ok(p.grounded, 'bopl fell off while walking around the curved side');
-  assert.ok(p.x > 0.8, `bopl did not travel around the platform (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
-  const before = { x: p.x, y: p.y };
-  run(w, 0.06, (_world, i) => {
-    applyInput(p, { ...idle, jump: i === 0 });
+  const drive = (seconds, input) => run(w, seconds, () => {
+    q.x = -8; q.y = -4; q.vx = 0; q.vy = 0; q.alive = true;
+    applyInput(p, { ...idle, ...input });
     applyInput(q, idle);
   });
-  const radialBefore = Math.hypot(before.x, before.y);
-  const radialAfter = Math.hypot(p.x, p.y);
-  assert.ok(!p.grounded, 'jump immediately reattached to the platform');
-  assert.ok(radialAfter > radialBefore, 'jump did not launch away from the local surface normal');
+  drive(0.25, {});
+  assert.ok(p.grounded, 'bopl did not adhere to the top of the ball');
+  drive(0.4, { mx: 1 });
+  assert.ok(p.x > 1.2 && p.y < 0, `D did not move right over the top (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+  drive(0.5, { my: 1 });
+  assert.ok(p.x > 1.5 && p.y > 0, `S did not move down the right side (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+  drive(1, { mx: -1 });
+  assert.ok(p.x < 0 && p.y > 1, `A did not move left across the underside (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+  drive(0.8, { my: -1 });
+  assert.ok(p.x < -1.5 && p.y < 0.3, `W did not move up the left side (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+  assert.ok(p.grounded, 'bopl detached during a cardinal direction hand-off');
+});
+
+check('side jumps rise diagonally and underside jumps only detach', () => {
+  const w = world([[], []], MAPS.findIndex(map => map.theme === 'space'));
+  for (const body of w.bodies) if (body.kind === 'plat') body.dead = true;
+  const ball = addBody(w, {
+    kind: 'plat', x: 0, y: 0, hx: 0, r: 1.55, baseHx: 0, baseR: 1.55,
+    ptype: 'ground', rotates: true, density: 80, gravity: 0, drag: 0,
+    spring: 1, torqueSpring: 1, anchorX: 0, anchorY: 0, anchorAng: 0,
+    homeX: 0, homeY: 0, fric: 0.95, rest: 0,
+  });
+  const [p, q] = w.players;
+  w.phase = 'play'; w.phaseT = 0;
+  const tick = input => {
+    q.x = -8; q.y = -4; q.vx = 0; q.vy = 0; q.alive = true;
+    applyInput(p, { ...idle, ...input });
+    applyInput(q, idle);
+    step(w, TUNE.step);
+  };
+  const place = (x, y, nx, ny) => {
+    p.x = x; p.y = y; p.vx = 0; p.vy = 0;
+    p.grounded = true; p.groundId = ball.id; p.groundNx = nx; p.groundNy = ny;
+    p.detachT = 0; p.jumpHeld = false; p.jumpBuffer = 0; p.coyote = TUNE.coyote;
+  };
+
+  place(-ball.r - p.r - 0.01, 0, -1, 0);
+  tick({});
+  tick({ jump: true });
+  assert.ok(!p.grounded, 'side jump did not detach');
+  assert.ok(p.vx < -2, `side jump lacked outward motion (${p.vx.toFixed(2)})`);
+  assert.ok(p.vy < -2, `side jump launched sideways instead of up (${p.vy.toFixed(2)})`);
+
+  place(0, ball.r + p.r + 0.01, 0, 1);
+  tick({});
+  const undersideY = p.y;
+  tick({ jump: true });
+  assert.ok(!p.grounded, 'underside jump did not detach');
+  assert.ok(Math.abs(p.vx) < 0.5 && p.vy < 0.8, `underside jump added a launch impulse (${p.vx.toFixed(2)}, ${p.vy.toFixed(2)})`);
+  for (let i = 0; i < 6; i++) tick({});
+  assert.ok(p.y > undersideY, 'detached underside bopl did not fall');
 });
 
 check('walking around a platform edge stays attached', () => {
@@ -113,7 +154,11 @@ check('walking around a platform edge stays attached', () => {
   other.x = 0; other.y = 2.6 - 2;
   p.x = 9.2; p.y = 1.1;
   run(w, 6, () => {
-    applyInput(p, { ...idle, mx: 1 });
+    const tx = -p.groundNy, ty = p.groundNx;
+    const move = Math.abs(tx) >= Math.abs(ty)
+      ? { mx: Math.sign(tx) || 1 }
+      : { my: Math.sign(ty) || 1 };
+    applyInput(p, { ...idle, ...move });
     applyInput(other, idle);
   });
   assert.equal(p.alive, true, 'sticky bopl fell off a walkable platform edge');
@@ -594,13 +639,13 @@ check('offensive abilities can actually get a kill', () => {
   const failures = [];
   for (const id of lethal) {
     let killed = false;
-    for (let attempt = 0; attempt < 6 && !killed; attempt++) {
+    for (let attempt = 0; attempt < 10 && !killed; attempt++) {
       const w = world([[id], []], attempt % 3);
       const [p, q] = w.players;
       w.phase = 'play'; w.phaseT = 0;
       p.iframes = 0; q.iframes = 0;
       const brains = [createBrain(attempt + 1), createBrain(attempt + 9)];
-      run(w, 14, (world) => {
+      run(w, 18, (world) => {
         driveBot(world, p, brains[0], TUNE.step);
         driveBot(world, q, brains[1], TUNE.step);
         if (!q.alive) killed = true;

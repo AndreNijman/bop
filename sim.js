@@ -197,7 +197,7 @@ export function createWorld(opts) {
       invis: 0, squish: 0, stretch: 0, kills: 0, blink: 0, eaten: 0,
       grappleId: -1, grappleLen: 0, grappleLx: 0, grappleLy: 0,
       heldId: -1, reviveX: 0, reviveY: 0, revive: false, reviveSlot: -1,
-      input: { mx: 0, jump: false, ax: 1, ay: 0, ab: [false, false, false] },
+      input: { mx: 0, my: 0, jump: false, ax: 1, ay: 0, ab: [false, false, false] },
       loadout: (def.loadout || def.abilities || []).slice(0, TUNE.slots),
       slots: (def.abilities || []).slice(0, TUNE.slots).map(id => ({ id, cd: 0, down: false, t: 0, state: 0, data: 0 })),
       spawnX: spot[0], spawnY: spot[1],
@@ -233,7 +233,12 @@ function cloneBopl(w, source, x, y, keepAbilities) {
 export function applyInput(p, input) {
   if (!p) return;
   const i = p.input;
-  i.mx = clamp(Number(input.mx) || 0, -1, 1);
+  let mx = clamp(Number(input.mx) || 0, -1, 1);
+  let my = clamp(Number(input.my) || 0, -1, 1);
+  const moveLength = len(mx, my);
+  if (moveLength > 1) { mx /= moveLength; my /= moveLength; }
+  i.mx = mx;
+  i.my = my;
   i.jump = !!input.jump;
   const [ax, ay] = norm(Number(input.ax) || 0, Number(input.ay) || 0);
   if (ax !== 0 || ay !== 0) { i.ax = ax; i.ay = ay; }
@@ -1352,7 +1357,7 @@ function channelAbility(w, p, slot, index, ab, dt) {
       host.anchorOff = 0.12;
       const f = ab.force / Math.max(1, host.mass * 0.09);
       host.vx += p.input.mx * f * dt;
-      if (p.input.jump) host.vy -= f * dt * 0.6;
+      host.vy += p.input.my * f * dt;
       break;
     }
   }
@@ -1650,18 +1655,19 @@ function stepPlayer(w, p, dt) {
   const cap = gunned ? 1.7 : TUNE.runSpeed;
   const frame = p.detachT <= 0 ? groundFrame(w, p) : null;
   if (frame) {
-    // Bopls are sticky. Left/right means counter-clockwise/clockwise around the
-    // current surface, not global horizontal motion. Carry includes the point
-    // velocity from a rotating platform, so riders stay attached to its rim.
+    // Movement stays screen-relative on every side of a platform. Projecting
+    // WASD/the left stick onto the tangent creates the cardinal hand-off around
+    // a curve while carry keeps riders attached to rotating terrain.
     p.gravity = 0;
     p.groundNx = frame.nx;
     p.groundNy = frame.ny;
     const rvx = p.vx - frame.vx, rvy = p.vy - frame.vy;
     const tangentSpeed = rvx * frame.tx + rvy * frame.ty;
     const normalSpeed = rvx * frame.nx + rvy * frame.ny;
-    const target = p.input.mx * cap;
+    const move = p.input.mx * frame.tx + p.input.my * frame.ty;
+    const target = move * cap;
     const accel = TUNE.runAccel * (gunned ? 0.4 : 1);
-    const nextTangent = p.input.mx !== 0
+    const nextTangent = Math.abs(move) > 1e-4
       ? tangentSpeed + clamp(target - tangentSpeed, -accel * dt, accel * dt)
       : tangentSpeed * (1 - Math.min(1, TUNE.groundFriction * dt * (frame.ground.fric < 0.2 ? 0.08 : 1)));
     // Press gently into the surface. The contact solver cancels this inward
@@ -1669,8 +1675,8 @@ function stepPlayer(w, p, dt) {
     const nextNormal = Math.min(normalSpeed, -TUNE.stickSpeed);
     p.vx = frame.vx + frame.tx * nextTangent + frame.nx * nextNormal;
     p.vy = frame.vy + frame.ty * nextTangent + frame.ny * nextNormal;
-    if (p.input.mx !== 0) {
-      p.face = p.input.mx > 0 ? 1 : -1;
+    if (Math.abs(move) > 1e-4) {
+      if (p.input.mx !== 0) p.face = p.input.mx > 0 ? 1 : -1;
       if (p.invis > 0 && Math.abs(nextTangent) > 1.4) {
         p.dust = (p.dust || 0) - dt;
         if (p.dust <= 0) {
@@ -1703,8 +1709,11 @@ function stepPlayer(w, p, dt) {
     const tangentX = -ny, tangentY = nx;
     const tangentSpeed = relativeX * tangentX + relativeY * tangentY;
     const force = jump * (0.82 + 0.18 * sizeScale(p.size));
-    p.vx = carryX + tangentX * tangentSpeed + nx * force;
-    p.vy = carryY + tangentY * tangentSpeed + ny * force;
+    // Vanilla jumps blend world-up with the local outward normal. The blend is
+    // intentionally not normalized: side jumps are shorter and diagonal, while
+    // jumping from an underside only detaches and lets gravity take over.
+    p.vx = carryX + tangentX * tangentSpeed + nx * force * 0.5;
+    p.vy = carryY + tangentY * tangentSpeed + (ny - 1) * force * 0.5;
     p.jumpBuffer = 0; p.coyote = 0; p.grounded = false;
     p.groundId = -1;
     p.detachT = 0.12;
@@ -2033,7 +2042,7 @@ function boplDynamic(p) {
     p.revive ? 1 : 0, r2(p.reviveX), r2(p.reviveY), p.face, r2(p.stretch),
     r2(p.beamLen || 0), r2(p.input.mx), bits, p.eaten,
     p.slots.map(slot => [slot.id, r2(slot.cd), slot.state, r2(slot.t), r2(slot.fuel || 0), slot.data || 0, slot.used ? 1 : 0]),
-    [...p.loadout],
+    [...p.loadout], r2(p.input.my),
   ];
 }
 
@@ -2057,6 +2066,7 @@ function applyBoplDynamic(p, d, isLocal) {
   if (!isLocal) {
     p.input.ax = d[13]; p.input.ay = d[14];
     p.input.mx = d[30];
+    p.input.my = Number(d[35]) || 0;
     const bits = d[31];
     for (let i = 0; i < p.input.ab.length; i++) p.input.ab[i] = !!(bits & (1 << i));
   }

@@ -65,7 +65,7 @@ async function session(page, label, holdMs) {
   for (let beat = 0; beat < 14; beat++) {
     const dir = beat % 4 < 2 ? 'KeyD' : 'KeyA';
     await page.keyboard.down(dir);
-    if (beat % 3 === 0) { await page.keyboard.down('KeyW'); }
+    if (beat % 3 === 0) { await page.keyboard.down('Space'); }
 
     // Aim at whoever is nearest, then use the ability under test.
     const aim = await page.evaluate(() => {
@@ -82,7 +82,7 @@ async function session(page, label, holdMs) {
       await page.mouse.up();
     }
     await page.keyboard.up(dir);
-    await page.keyboard.up('KeyW');
+    await page.keyboard.up('Space');
     await page.waitForTimeout(220);
 
     const sample = await page.evaluate(() => window.__poll());

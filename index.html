@@ -13,7 +13,7 @@
 <meta property="og:url" content="https://bop.andrenijman.com/" />
 <meta property="og:image" content="https://bop.andrenijman.com/og-image.png" />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="stylesheet" href="style.css?v=20260820-3" />
+<link rel="stylesheet" href="style.css?v=20260820-4" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='34' r='24' fill='%23ff6b5e' stroke='%23c93f36' stroke-width='5'/%3E%3Ccircle cx='24' cy='28' r='7' fill='%23fff'/%3E%3Ccircle cx='42' cy='28' r='7' fill='%23fff'/%3E%3Ccircle cx='25' cy='29' r='3' fill='%231b1725'/%3E%3Ccircle cx='43' cy='29' r='3' fill='%231b1725'/%3E%3C/svg%3E" />
 </head>
 <body>
@@ -31,8 +31,9 @@
     <div id="banner"></div>
     <div id="hud-bottom">
       <div id="slots"></div>
+      <button id="touch-jump" type="button" aria-label="Jump">jump</button>
       <div id="hud-tips">
-        <span><b>A</b>/<b>D</b> move</span><span><b>W</b> jump</span><span>mouse aims</span>
+        <span><b>WASD</b> move</span><span><b>Space</b> jump</span><span>mouse aims</span>
       </div>
     </div>
     <div id="net-info"></div>
@@ -192,8 +193,8 @@
         <p>There is no health bar. You die by leaving the arena, hitting the water, getting crushed between two solid things, being eaten by something two sizes bigger, or touching anything genuinely lethal — an arrow, a spike, a rolling player, a drill bit, an explosion.</p>
         <h3>Controls</h3>
         <table class="keys">
-          <tr><td><b>A</b> <b>D</b> or arrows</td><td>move</td></tr>
-          <tr><td><b>W</b> / <b>Space</b></td><td>jump (also lets go of a grapple)</td></tr>
+          <tr><td><b>WASD</b> or arrows</td><td>move in screen directions around every side of terrain</td></tr>
+          <tr><td><b>Space</b></td><td>jump (also lets go of a grapple)</td></tr>
           <tr><td>mouse</td><td>aim everything</td></tr>
           <tr><td>left click / <b>J</b></td><td>ability one</td></tr>
           <tr><td>right click / <b>K</b></td><td>ability two</td></tr>
@@ -213,6 +214,6 @@
   <div id="toast" role="status"></div>
 </main>
 
-<script type="module" src="game.js?v=20260820-3"></script>
+<script type="module" src="game.js?v=20260820-4"></script>
 </body>
 </html>
