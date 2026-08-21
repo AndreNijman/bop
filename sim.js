@@ -11,7 +11,7 @@
 // collision routine, which is the only reason a physics game of this size fits
 // in a readable file.
 
-import { TUNE, ABILITY_BY_ID, ABILITY_IDS, MAPS, THEMES, sizeScale, clamp, makeRng } from './data.js';
+import { TUNE, ABILITY_BY_ID, ABILITY_IDS, MAPS, THEMES, sizeScale, clamp, makeRng } from './data.js?v=20260821-3';
 
 const SOLID = new Set(['bopl', 'plat', 'grenade', 'boulder', 'mine', 'coil', 'smoke', 'ability']);
 const PROJECTILE = new Set(['arrow', 'missile', 'ray', 'hook']);
@@ -121,10 +121,11 @@ function removeDead(w) {
   let write = 0;
   for (let i = 0; i < w.bodies.length; i++) {
     const b = w.bodies[i];
-    if (b.dead && b.kind !== 'bopl') { w.gone.push(b.id); continue; }
+    if (b.dead && (b.kind !== 'bopl' || b.clone)) { w.gone.push(b.id); continue; }
     w.bodies[write++] = b;
   }
   w.bodies.length = write;
+  w.players = w.bodies.filter(body => body.kind === 'bopl');
 }
 
 export function bodyById(w, id) {
@@ -167,6 +168,7 @@ export function createWorld(opts) {
     const b = addBody(w, {
       kind: 'plat', x: spec.x, y: spec.y, ang: spec.ang || 0,
       hx: spec.hx, r: spec.r, baseHx: spec.hx, baseR: spec.r,
+      mapTerrain: true,
       // Free terrain has nothing holding it up, so a bopl standing on it pushes
       // it down forever. Heavy plus well damped means abilities can still shove
       // it about while a resting passenger barely moves it.
@@ -258,6 +260,9 @@ function collides(a, b) {
   if (a.hidden > 0 || b.hidden > 0) return false;
   if ((a.kind === 'bopl' && !a.alive) || (b.kind === 'bopl' && !b.alive)) return false;
   if (!SOLID.has(a.kind) || !SOLID.has(b.kind)) return false;
+  // Authored pieces can overlap to form one arena structure. Treating those
+  // seams as collisions makes the map push itself apart during the intro.
+  if (a.kind === 'plat' && b.kind === 'plat' && a.mapTerrain && b.mapTerrain) return false;
   if (a.kind === 'smoke' || b.kind === 'smoke') return false;
   if (a.kind === 'ability' || b.kind === 'ability') {
     const other = a.kind === 'ability' ? b : a;
@@ -271,6 +276,7 @@ function collides(a, b) {
     return true;
   }
   if (a.kind === 'mine' && b.kind === 'mine') return false;
+  if ((a.kind === 'coil' && a.host === b.id) || (b.kind === 'coil' && b.host === a.id)) return false;
   // A coil rests on terrain and blocks objects, but bopls walk straight through
   // it - you cannot stand on one or be shoved by one.
   if ((a.kind === 'coil' && b.kind === 'bopl') || (b.kind === 'coil' && a.kind === 'bopl')) return false;
@@ -302,7 +308,7 @@ function makeContacts(w) {
       if (dist > 1e-6) { nx = ddx / dist; ny = ddy / dist; }
       else { const f = norm(b.x - a.x, b.y - a.y); nx = f[0] || 0; ny = f[1] || -1; }
       const pen = rad - dist;
-      contacts.push({ a, b, nx, ny, pen, px: cax + nx * a.r, py: cay + ny * a.r });
+      contacts.push({ a, b, nx, ny, pen, dx, dy, positional: true, px: cax + nx * a.r, py: cay + ny * a.r });
       // Two nearly parallel capsules need a second contact or they see-saw. Add
       // one at each end of the overlapping span.
       if (a.hx > 0.2 && b.hx > 0.2) {
@@ -312,7 +318,7 @@ function makeContacts(w) {
           const tx = -ny, ty = nx;
           for (const sign of [-1, 1]) {
             contacts.push({
-              a, b, nx, ny, pen: pen * 0.55,
+              a, b, nx, ny, pen: pen * 0.55, dx, dy, positional: false,
               px: cax + nx * a.r + tx * off * sign, py: cay + ny * a.r + ty * off * sign,
             });
           }
@@ -355,8 +361,9 @@ function solve(w, contacts, dt) {
       const rtb = rbx * ty - rby * tx;
       const invT = a.im + b.im + a.ii * rta * rta + b.ii * rtb * rtb;
       if (invT <= 1e-9) continue;
-      const walkingContact = (a.kind === 'bopl' && a.input?.mx && (b.kind === 'plat' || b.form === 'platform'))
-        || (b.kind === 'bopl' && b.input?.mx && (a.kind === 'plat' || a.form === 'platform'));
+      const tangentInput = body => Math.abs((body.input?.mx || 0) * tx + (body.input?.my || 0) * ty) > 1e-4;
+      const walkingContact = (a.kind === 'bopl' && tangentInput(a) && (b.kind === 'plat' || b.form === 'platform'))
+        || (b.kind === 'bopl' && tangentInput(b) && (a.kind === 'plat' || a.form === 'platform'));
       // Active slime locomotion supplies its own tangential traction. Applying
       // Coulomb friction as well would erase that speed every frame because the
       // adhesion impulse is deliberately strong.
@@ -374,10 +381,12 @@ function solve(w, contacts, dt) {
   // Positional relaxation. Keeps stacks from sinking without adding energy.
   for (let iter = 0; iter < 3; iter++) {
     for (const c of contacts) {
+      if (!c.positional) continue;
       const { a, b, nx, ny } = c;
       const inv = a.im + b.im;
       if (inv <= 1e-9) continue;
-      const corr = Math.max(0, c.pen - slop) * 0.35 / inv;
+      const moved = ((b.x - a.x) - c.dx) * nx + ((b.y - a.y) - c.dy) * ny;
+      const corr = Math.max(0, c.pen - moved - slop) * 0.6 / inv;
       a.x -= nx * corr * a.im; a.y -= ny * corr * a.im;
       b.x += nx * corr * b.im; b.y += ny * corr * b.im;
     }
@@ -394,16 +403,31 @@ function vulnerable(p) {
   return true;
 }
 
+function clearGrounding(p) {
+  p.grounded = false;
+  p.groundId = -1;
+  p.groundNx = 0;
+  p.groundNy = -1;
+  p.coyote = 0;
+  p.jumpBuffer = 0;
+  p.detachT = Math.max(p.detachT || 0, 0.12);
+}
+
 export function kill(w, p, cause, killerPid = -1) {
   if (!p.alive) return;
   const orbs = w.bodies.filter(b => b.kind === 'orb' && b.owner === p.pid && !b.dead);
   if (orbs.length) {
+    for (const body of w.bodies) {
+      if (body.kind === 'grenade' && body.owner === p.pid && body.held
+        && (body.caster == null || body.caster === p.id)) body.held = false;
+    }
     for (const orb of orbs) orb.dead = true;
     const first = orbs[0];
     p.revive = false;
     p.reviveSlot = -1;
     p.x = first.x; p.y = first.y;
     p.vx = 0; p.vy = 0;
+    clearGrounding(p);
     p.iframes = TUNE.respawnLock;
     leaveForm(w, p);
     for (const s of p.slots) {
@@ -434,7 +458,7 @@ export function kill(w, p, cause, killerPid = -1) {
     w.events.push({ e: 'abilityDrop', x: p.x, y: p.y, id: middle.id });
   }
   p.alive = false;
-  p.dead = false;             // stays in the array so the client keeps its slot
+  p.dead = !!p.clone;         // originals stay so the client keeps their slot
   p.hidden = 0;
   p.form = 'normal';
   p.vx = 0; p.vy = 0;
@@ -447,8 +471,10 @@ export function kill(w, p, cause, killerPid = -1) {
 
 function explode(w, x, y, radius, impulse, ownerPid, kind = 'blast') {
   w.events.push({ e: kind, x, y, r: radius });
-  for (const b of w.bodies) {
-    if (b.dead) continue;
+  // Revival can append clones while an explosion is being processed. New life
+  // starts after this blast rather than being visited by the live array loop.
+  for (const b of [...w.bodies]) {
+    if (b.dead || b.hidden > 0) continue;
     const dx = b.x - x, dy = b.y - y;
     const d = len(dx, dy);
     if (d > radius + b.r + b.hx) continue;
@@ -480,11 +506,11 @@ function teleportSwap(w, p, bubble) {
   const dx = bubble.x - fromX, dy = bubble.y - fromY;
   const from = [], to = [];
   for (const body of w.bodies) {
-    if (body === p || body === bubble || body.dead || body.kind === 'bubble') continue;
+    if (body === p || body === bubble || body.dead || body.hidden > 0 || body.kind === 'bubble') continue;
     if (body.kind === 'plat' && body.ptype !== 'free') continue;
     if (body.host >= 0) continue;
-    const atPlayer = len(body.x - fromX, body.y - fromY) < bubble.r + body.r;
-    const atBubble = len(body.x - bubble.x, body.y - bubble.y) < bubble.r + body.r;
+    const atPlayer = overlapsBody(body, fromX, fromY, bubble.r);
+    const atBubble = overlapsBody(body, bubble.x, bubble.y, bubble.r);
     if (atPlayer) from.push(body);
     else if (atBubble) to.push(body);
   }
@@ -492,7 +518,7 @@ function teleportSwap(w, p, bubble) {
   for (const body of to) { body.x -= dx; body.y -= dy; }
   p.x += dx; p.y += dy;
   for (const body of [p, ...from, ...to]) {
-    if (body.kind === 'bopl') { body.vx = 0; body.vy = 0; }
+    if (body.kind === 'bopl') { body.vx = 0; body.vy = 0; clearGrounding(body); }
   }
   bubble.dead = true;
   w.events.push({ e: 'warp', x: p.x, y: p.y });
@@ -503,6 +529,7 @@ function teleportSwap(w, p, bubble) {
 // ---------------------------------------------------------------------------
 
 function leaveForm(w, p) {
+  const form = p.form;
   if (p.form === 'platform') {
     const out = norm(p.input.ax, p.input.ay);
     const reach = p.hx + p.r + TUNE.boplRadius * sizeScale(p.size) + 0.12;
@@ -514,6 +541,10 @@ function leaveForm(w, p) {
   }
   if (p.form === 'bow') { p.vx = 0; p.vy = 0; }
   else if (p.form === 'gun') p.vx *= 0.15;
+  if (form === 'rock') {
+    p.rest = 0.02;
+    refreshSize(p);
+  }
   p.form = 'normal';
   p.formT = 0;
   p.fuel = 0;
@@ -532,7 +563,12 @@ function resize(w, b, delta) {
     for (const clone of w.players) {
       if (clone.pid !== b.pid) continue;
       clone.size = size;
-      refreshSize(clone);
+      if (clone.form === 'platform') continue;
+      clone.r = TUNE.boplRadius * sizeScale(clone.size);
+      const density = clone.form === 'rock'
+        ? TUNE.boplDensity * ABILITY_BY_ID.get('rock').massScale
+        : TUNE.boplDensity;
+      setMass(clone, density);
     }
     w.events.push({ e: 'resize', x: b.x, y: b.y, d: delta });
     return;
@@ -548,13 +584,14 @@ function resize(w, b, delta) {
   }
   if (b.kind === 'hole') {
     b.core += delta * 0.28;
-    if (b.core <= 0.12) { b.white = !b.white; b.core = 0.3; }
+    if (b.core <= 0.12) { b.white = true; b.core = 0.3; }
     b.r = b.core;
     return;
   }
   b.size = clamp(b.size + delta, -4, 5);
   const scale = sizeScale(b.size);
-  b.r = (b.baseR || b.r) * scale;
+  if (!Number.isFinite(b.baseR)) b.baseR = b.r;
+  b.r = b.baseR * scale;
   setMass(b, b.density);
 }
 
@@ -636,7 +673,7 @@ function stepObject(w, b, dt) {
         }
       }
       if (b.held) {
-        const p = playerById(w, b.owner);
+        const p = bodyById(w, b.caster) || playerById(w, b.owner);
         if (!p || !p.alive) { b.held = false; }
         else { b.x = p.x + p.input.ax * (p.r + b.r + 0.06); b.y = p.y + p.input.ay * (p.r + b.r + 0.06); b.vx = p.vx; b.vy = p.vy; }
       }
@@ -645,7 +682,7 @@ function stepObject(w, b, dt) {
     }
     case 'missile': {
       const ab = ABILITY_BY_ID.get('missile');
-      const p = playerById(w, b.owner);
+      const p = bodyById(w, b.caster) || playerById(w, b.owner);
       if (b.guided && p && p.alive && p.slots[b.slot] && p.slots[b.slot].state === 1) {
         const want = Math.atan2(p.input.ay, p.input.ax);
         let da = want - b.ang;
@@ -655,8 +692,12 @@ function stepObject(w, b, dt) {
         b.speed = ab.cruise;
       } else b.guided = false;
       b.speed = Math.min(b.guided ? ab.cruise : ab.boost, b.speed + 24 * dt);
-      b.vx = Math.cos(b.ang) * b.speed;
-      b.vy = Math.sin(b.ang) * b.speed;
+      const targetVx = Math.cos(b.ang) * b.speed;
+      const targetVy = Math.sin(b.ang) * b.speed;
+      const dvx = targetVx - b.vx, dvy = targetVy - b.vy;
+      const change = len(dvx, dvy);
+      const motor = Math.min(change, 24 * dt);
+      if (change > 1e-6) { b.vx += dvx / change * motor; b.vy += dvy / change * motor; }
       b.ttl -= dt;
       const hit = nearestSolidHit(w, b, true);
       if (hit || b.ttl <= 0) { explode(w, b.x, b.y, b.blast, b.impulse, b.owner); b.dead = true; }
@@ -693,7 +734,7 @@ function stepObject(w, b, dt) {
     }
     case 'hook': {
       b.ttl -= dt;
-      const p = playerById(w, b.owner);
+      const p = bodyById(w, b.caster) || playerById(w, b.owner);
       if (!p || !p.alive || p.grappleId !== -2) { b.dead = true; break; }
       if (len(b.x - p.x, b.y - p.y) > ABILITY_BY_ID.get('grapple').range || b.ttl <= 0) { p.grappleId = -1; b.dead = true; break; }
       const hit = nearestHookHit(w, b);
@@ -735,9 +776,10 @@ function stepObject(w, b, dt) {
         }
         if (b.state === 2) { b.hunt -= dt; if (b.hunt <= 0) b.boom = true; }
       }
+      const owner = playerById(w, b.owner);
       for (const p of w.players) {
-        if (!p.alive) continue;
-        if (p.pid === b.owner && w.t - b.spawn < 0.25) continue;
+        if (!p.alive || p.hidden > 0 || b.state <= 0) continue;
+        if (p.pid === b.owner || (owner && p.team === owner.team)) continue;
         if (len(p.x - b.x, p.y - b.y) < p.r + b.r + 0.05) b.boom = true;
       }
       if (b.boom) { explode(w, b.x, b.y, ab.blast, ab.impulse, b.owner); b.dead = true; }
@@ -826,7 +868,7 @@ function stepObject(w, b, dt) {
       if (b.ttl <= 0) { w.events.push({ e: 'collapse', x: b.x, y: b.y }); b.dead = true; break; }
       const sign = b.white ? -1 : 1;
       for (const other of w.bodies) {
-        if (other === b || other.dead || other.kind === 'hole' || other.kind === 'engine' || other.kind === 'spike') continue;
+        if (other === b || other.dead || other.hidden > 0 || other.kind === 'hole' || other.kind === 'engine' || other.kind === 'spike') continue;
         const dx = b.x - other.x, dy = b.y - other.y;
         const d = len(dx, dy);
         const reach = ab.radius * (0.6 + b.core);
@@ -850,10 +892,6 @@ function stepObject(w, b, dt) {
     }
     case 'bubble': {
       b.ttl -= dt;
-      const owner = playerById(w, b.owner);
-      const trigger = owner && w.players.some(player => player.alive && player.pid !== owner.pid
-        && len(player.x - owner.x, player.y - owner.y) < player.r + owner.r);
-      if (trigger) teleportSwap(w, owner, b);
       if (b.ttl <= 0) b.dead = true;
       break;
     }
@@ -892,6 +930,9 @@ function applyRay(w, ray, target) {
       if (target.kind === 'bopl' && target.form === 'normal') {
         const clone = cloneBopl(w, target, target.x + nx * off, target.y + ny * off, false);
         if (clone) {
+          clone.duplicatorSource = target.id;
+          clone.duplicatorOwner = ray.owner;
+          clone.duplicatorSlot = ray.slot;
           clone.vx += nx * 4;
           clone.vy += ny * 4;
           w.events.push({ e: 'dup', x: clone.x, y: clone.y });
@@ -921,6 +962,7 @@ function applyRay(w, ray, target) {
           duplicatorSource: source,
           duplicatorOwner: ray.owner,
           duplicatorSlot: ray.slot,
+          mapTerrain: false,
         };
         if (copy.kind === 'bopl') {
           copy.kind = target.form === 'platform' ? 'plat' : 'boulder';
@@ -966,7 +1008,9 @@ function hand(p, reach) {
 function groundPlatform(w, p) {
   if (!p.grounded || p.groundId < 0) return null;
   const b = bodyById(w, p.groundId);
-  return b && (b.kind === 'plat' || (b.kind === 'bopl' && b.form === 'platform')) ? b : null;
+  if (!b || b.dead || b.hidden > 0 || (b.kind !== 'plat' && !(b.kind === 'bopl' && b.form === 'platform'))) return null;
+  const surface = surfacePoint(b, p.x, p.y);
+  return len(p.x - surface.sx, p.y - surface.sy) <= p.r + 0.3 ? b : null;
 }
 
 function groundFrame(w, p) {
@@ -974,14 +1018,21 @@ function groundFrame(w, p) {
   if (!ground) return null;
   const surface = surfacePoint(ground, p.x, p.y);
   const rx = surface.sx - ground.x, ry = surface.sy - ground.y;
+  let carryVx = ground.vx, carryVy = ground.vy;
+  let frozenGround = false;
+  if (w.freeze) {
+    const owner = playerById(w, w.freeze.owner);
+    frozenGround = ground.kind !== 'bopl' || !owner || ground.team !== owner.team;
+    if (frozenGround) { carryVx = 0; carryVy = 0; }
+  }
   return {
     ground,
     nx: surface.nx,
     ny: surface.ny,
     tx: -surface.ny,
     ty: surface.nx,
-    vx: ground.vx - ground.av * ry,
-    vy: ground.vy + ground.av * rx,
+    vx: carryVx - (frozenGround ? 0 : ground.av) * ry,
+    vy: carryVy + (frozenGround ? 0 : ground.av) * rx,
   };
 }
 
@@ -1024,6 +1075,7 @@ function fireAbility(w, p, slot, index, ab, charge) {
       p.form = 'meteor';
       p.formT = 1.4;
       p.charge = charge;
+      p.meteorCharge = charge;
       p.vy = -3.2;
       p.slamDelay = 0.16;
       w.events.push({ e: 'meteor', x: p.x, y: p.y });
@@ -1060,7 +1112,7 @@ function fireAbility(w, p, slot, index, ab, charge) {
       let carriedDistance = 1.5 * scale;
       for (const body of w.bodies) {
         if (body.dead || (body.kind !== 'spike' && body.kind !== 'engine' && body.kind !== 'coil')) continue;
-        if ((body.kind === 'spike' || body.kind === 'engine') && body.host !== host.id) continue;
+        if (body.host !== host.id) continue;
         const distance = len(body.x - p.x, body.y - p.y);
         if (distance < carriedDistance) { carried = body; carriedDistance = distance; }
       }
@@ -1085,6 +1137,8 @@ function fireAbility(w, p, slot, index, ab, charge) {
         }
       }
       host.size = Math.max(-4, host.size - 0.7);
+      if (!Number.isFinite(host.baseHx)) host.baseHx = host.hx;
+      if (!Number.isFinite(host.baseR)) host.baseR = host.r;
       const hostScale = sizeScale(host.size);
       host.hx = host.baseHx * hostScale;
       host.r = host.baseR * hostScale;
@@ -1109,6 +1163,8 @@ function tapAbility(w, p, slot, index, ab) {
     case 'dash': {
       p.vx = p.input.ax * ab.speed;
       p.vy = p.input.ay * ab.speed;
+      clearGrounding(p);
+      p.gravity = 1;
       p.iframes = Math.max(p.iframes, ab.iframes);
       w.events.push({ e: 'dash', x: p.x, y: p.y });
       return true;
@@ -1116,7 +1172,7 @@ function tapAbility(w, p, slot, index, ab) {
     case 'gust': {
       w.events.push({ e: 'gust', x: p.x, y: p.y, r: ab.radius * scale });
       for (const b of w.bodies) {
-        if (b === p || b.dead) continue;
+        if (b === p || b.dead || b.hidden > 0) continue;
         const dx = b.x - p.x, dy = b.y - p.y;
         const d = len(dx, dy);
         if (d > ab.radius * scale + b.r) continue;
@@ -1215,12 +1271,20 @@ function tapAbility(w, p, slot, index, ab) {
       if (!host) return false;
       const mine = w.bodies.filter(b => b.kind === 'coil' && b.owner === p.pid && b.slot === index && !b.dead);
       if (mine.length >= 2) mine[0].dead = true;
+      const s = surfacePoint(host, p.x, p.y);
+      const half = 0.3 * scale;
+      const offset = half + 0.26 * scale + 0.02;
+      const x = s.sx + s.nx * offset, y = s.sy + s.ny * offset;
+      const c = Math.cos(-host.ang), sn = Math.sin(-host.ang);
+      const dx = x - host.x, dy = y - host.y;
+      const ang = Math.atan2(s.ny, s.nx);
       addBody(w, {
-        kind: 'coil', x: p.x, y: p.y - p.r * 0.2, r: 0.26 * scale, hx: 0.3 * scale, ang: Math.PI / 2,
-        owner: p.pid, slot: index, density: 4, gravity: 1, arcOff: 0, ttl: ABILITY_BY_ID.get('tesla').life,
+        kind: 'coil', x, y, r: 0.26 * scale, hx: half, ang,
+        owner: p.pid, slot: index, host: host.id, lx: dx * c - dy * sn, ly: dx * sn + dy * c,
+        la: ang - host.ang, density: 4, im: 0, gravity: 0, arcOff: 0, ttl: ABILITY_BY_ID.get('tesla').life,
         rest: 0.05, fric: 0.9,
       });
-      w.events.push({ e: 'coil', x: p.x, y: p.y });
+      w.events.push({ e: 'coil', x, y });
       return true;
     }
   }
@@ -1235,15 +1299,20 @@ function channelAbility(w, p, slot, index, ab, dt) {
       const [hx, hy] = hand(p, 0.1);
       const dirx = p.input.ax, diry = p.input.ay;
       let reach = ab.range;
-      const blocker = raycast(w, hx, hy, dirx, diry, ab.range, b => b.kind === 'plat' && b.hidden <= 0);
+      const blocker = raycast(w, hx, hy, dirx, diry, ab.range,
+        b => b.hidden <= 0 && (b.kind === 'plat' || (b.kind === 'bopl' && b.form === 'platform')));
       if (blocker) reach = blocker.d;
       p.beamLen = reach;
       for (const b of w.bodies) {
-        if (b === p || b.dead || b.kind === 'engine' || b.kind === 'bubble') continue;
+        if (b === p || b.dead || b.hidden > 0 || b.kind === 'engine' || b.kind === 'bubble') continue;
         const [a0x, a0y, a1x, a1y] = ends(b);
         const [cax, cay, cbx, cby] = closestSeg(hx, hy, hx + dirx * reach, hy + diry * reach, a0x, a0y, a1x, a1y);
         if (len(cbx - cax, cby - cay) > b.r + 0.16) continue;
-        if (b.kind === 'bopl') { if (vulnerable(b)) kill(w, b, 'beam', p.pid); continue; }
+        if (b.kind === 'bopl') {
+          if (vulnerable(b)) kill(w, b, 'beam', p.pid);
+          else { b.vx += dirx * ab.push * dt; b.vy += diry * ab.push * dt; }
+          continue;
+        }
         if (b.kind === 'smoke') { igniteSmoke(w, b); continue; }
         if (b.kind === 'grenade') { b.fuse = Math.min(b.fuse, 0.05); continue; }
         if (b.kind === 'mine') { b.boom = true; continue; }
@@ -1274,7 +1343,7 @@ function channelAbility(w, p, slot, index, ab, dt) {
         p.grappleId = -2;
         addBody(w, {
           kind: 'hook', x: hx, y: hy, vx: p.input.ax * ab.speed, vy: p.input.ay * ab.speed,
-          r: 0.14, owner: p.pid, slot: index, im: 0, gravity: 0, ttl: 1.0,
+          r: 0.14, owner: p.pid, caster: p.id, slot: index, im: 0, gravity: 0, ttl: 1.0,
         });
       }
       if (p.grappleId >= 0) {
@@ -1316,7 +1385,7 @@ function channelAbility(w, p, slot, index, ab, dt) {
       }
       let target = null, best = ab.range;
       for (const b of w.bodies) {
-        if (b === p || b.dead) continue;
+        if (b === p || b.dead || b.hidden > 0) continue;
         const marker = b.kind === 'orb' || b.kind === 'bubble' || b.kind === 'hole';
         if (b.kind === 'plat' && b.ptype !== 'free') continue;
         if (b.im === 0 && !marker) continue;
@@ -1397,7 +1466,29 @@ function endChannel(w, p, ab) {
       break;
     }
   }
-  leaveForm(w, p);
+  if (ab.id !== 'push' && !(ab.id === 'drill' && p.digOut)) leaveForm(w, p);
+}
+
+function cancelSlot(w, p, slot) {
+  const ab = ABILITY_BY_ID.get(slot?.id);
+  if (!ab || slot.state !== 1) return;
+  if (ab.kind === 'channel' || ab.kind === 'toggle') endChannel(w, p, ab);
+  else {
+    if (ab.id === 'grenade') {
+      const grenade = bodyById(w, slot.data);
+      if (grenade) grenade.held = false;
+    }
+    if (ab.kind === 'grapple') {
+      p.grappleId = -1;
+      for (const body of w.bodies) if (body.kind === 'hook' && body.caster === p.id) body.dead = true;
+    }
+    if (p.form !== 'normal') leaveForm(w, p);
+  }
+  slot.state = 0;
+  slot.down = false;
+  slot.t = 0;
+  slot.fuel = 0;
+  slot.data = 0;
 }
 
 const FORM_ABILITY = new Set(['rock', 'bow', 'beam', 'drill', 'blink', 'duplicator', 'growray', 'shrinkray', 'magnet', 'platform', 'roll', 'meteor', 'throw', 'timestop']);
@@ -1431,6 +1522,7 @@ function stepAbilities(w, p, dt) {
       if (pressed && slot.cd <= 0 && slot.state === 0 && p.grappleId === -1 && !locked && activeSlot < 0 && !started) {
         slot.state = 1;
         slot.t = 0;
+        p.invis = 0;
         started = true;
       }
       if (slot.state === 1) {
@@ -1444,6 +1536,7 @@ function stepAbilities(w, p, dt) {
       if (pressed && slot.cd <= 0 && !locked && activeSlot < 0 && !started && !(ab.once && slot.used)) {
         const result = tapAbility(w, p, slot, index, ab);
         if (result) {
+          if (ab.id !== 'invis') p.invis = 0;
           if (result !== 'free') slot.cd = ab.cd;
           if (ab.once) slot.used = true;
           started = true;
@@ -1459,6 +1552,7 @@ function stepAbilities(w, p, dt) {
         if (pressed || slot.t <= 0) { slot.state = 0; endChannel(w, p, ab); slot.cd = ab.cd; }
       } else if (pressed && slot.cd <= 0 && p.form === 'normal' && activeSlot < 0 && !started) {
         slot.state = 1; slot.t = ab.duration;
+        p.invis = 0;
         channelAbility(w, p, slot, index, ab, dt);
         started = true;
       }
@@ -1472,8 +1566,9 @@ function stepAbilities(w, p, dt) {
         p.fuel = ab.unlimited ? 1 : clamp(slot.fuel / ab.fuel, 0, 1);
         channelAbility(w, p, slot, index, ab, dt);
         if (released || (!ab.unlimited && slot.fuel <= 0) || !p.alive) { slot.state = 0; endChannel(w, p, ab); slot.cd = ab.cd; p.fuel = 0; }
-      } else if (pressed && slot.cd <= 0 && activeSlot < 0 && !started && (p.form === 'normal' || ab.id === 'push')) {
+      } else if (pressed && slot.cd <= 0 && activeSlot < 0 && !started && p.form === 'normal') {
         slot.state = 1; slot.t = 0; slot.fuel = ab.fuel;
+        p.invis = 0;
         channelAbility(w, p, slot, index, ab, dt);
         started = true;
       }
@@ -1524,6 +1619,7 @@ function stepAbilities(w, p, dt) {
         const scale = sizeScale(p.size);
         const g = addBody(w, {
           kind: 'grenade', x: p.x, y: p.y, r: 0.22 * scale, owner: p.pid, slot: index,
+          caster: p.id,
           density: 1.1, fuse: ab.fuse, blast: ab.blast * scale, impulse: ab.impulse,
           held: true, rest: 0.35, fric: 0.6, gravity: 1,
         });
@@ -1534,12 +1630,14 @@ function stepAbilities(w, p, dt) {
         addBody(w, {
           kind: 'missile', x: p.x + p.input.ax * 0.25, y: p.y - p.r - 0.85,
           r: 0.16 * scale, hx: 0.28 * scale, ang: -Math.PI / 2, owner: p.pid, slot: index,
+          caster: p.id,
           guided: true, speed: 1.4, blast: ab.blast * scale, impulse: ab.impulse,
           im: 0, gravity: 0, ttl: 6,
         });
       }
       slot.state = 1;
       slot.t = 0;
+      if (ab.id !== 'invis') p.invis = 0;
       started = true;
     }
   }
@@ -1636,10 +1734,10 @@ function stepPlayer(w, p, dt) {
       p.vx *= 0.86;
       p.lethal = true;
       if (p.grounded) {
-        const r = ab.radius[0] + (ab.radius[1] - ab.radius[0]) * (p.charge || 0);
+        const r = ab.radius[0] + (ab.radius[1] - ab.radius[0]) * (p.meteorCharge || 0);
         w.events.push({ e: 'slam', x: p.x, y: p.y, r });
         for (const b of w.bodies) {
-          if (b === p || b.dead) continue;
+          if (b === p || b.dead || b.hidden > 0) continue;
           const dx = b.x - p.x, dy = b.y - p.y;
           const d = len(dx, dy);
           if (d > r + b.r) continue;
@@ -1650,6 +1748,7 @@ function stepPlayer(w, p, dt) {
           if (b.kind === 'plat') b.anchorOff = Math.max(b.anchorOff, 0.5);
         }
         p.lethal = false;
+        p.meteorCharge = 0;
         p.formT = 0;
         leaveForm(w, p);
       }
@@ -1706,7 +1805,17 @@ function stepPlayer(w, p, dt) {
   p.jumpHeld = p.input.jump;
   p.jumpBuffer = Math.max(0, p.jumpBuffer - dt);
   p.coyote = p.grounded ? TUNE.coyote : Math.max(0, p.coyote - dt);
-  if (p.jumpBuffer > 0 && p.coyote > 0 && p.grappleId < 0) {
+  if (p.jumpBuffer > 0 && p.grappleId !== -1) {
+    p.grappleId = -1;
+    for (const body of w.bodies) if (body.kind === 'hook' && body.caster === p.id) body.dead = true;
+    for (const slot of p.slots) {
+      const ab = ABILITY_BY_ID.get(slot.id);
+      if (ab?.kind !== 'grapple' || slot.state !== 1) continue;
+      slot.state = 0;
+      slot.cd = ab.cd;
+    }
+  }
+  if (p.jumpBuffer > 0 && p.coyote > 0 && p.grappleId === -1) {
     const jump = w.gravity < TUNE.gravity * 0.7 ? TUNE.spaceJumpSpeed : TUNE.jumpSpeed;
     const nx = frame ? frame.nx : (p.groundNx || 0);
     const ny = frame ? frame.ny : (p.groundNy || -1);
@@ -1725,10 +1834,6 @@ function stepPlayer(w, p, dt) {
     p.detachT = 0.12;
     p.gravity = 1;
     w.events.push({ e: 'jump', x: p.x, y: p.y });
-  } else if (p.jumpBuffer > 0 && p.grappleId >= 0) {
-    p.grappleId = -1;
-    for (const s of p.slots) if (ABILITY_BY_ID.get(s.id)?.id === 'grapple' && s.state === 1) { s.state = 0; s.cd = ABILITY_BY_ID.get('grapple').cd; }
-    p.jumpBuffer = 0;
   }
 }
 
@@ -1767,7 +1872,11 @@ function postSolve(w, contacts, dt) {
         }
       }
       if (!hits.has(self)) hits.set(self, []);
-      hits.get(self).push([nx, ny, c.pen]);
+      const [a0x, a0y, a1x, a1y] = ends(c.a);
+      const [b0x, b0y, b1x, b1y] = ends(c.b);
+      const [cax, cay, cbx, cby] = closestSeg(a0x, a0y, a1x, a1y, b0x, b0y, b1x, b1y);
+      const residualPen = Math.max(0, c.a.r + c.b.r - len(cbx - cax, cby - cay));
+      hits.get(self).push([nx, ny, residualPen]);
     }
   }
   // Two surfaces closing from opposite sides is the classic Bopl death. We look
@@ -1786,20 +1895,24 @@ function postSolve(w, contacts, dt) {
       }
     }
     p.stretch = clamp(worst / (p.r * TUNE.squishRatio), 0, 1.4);
-    if (worst > p.r * TUNE.squishRatio && p.form !== 'platform') {
+    if (worst > p.r * TUNE.squishRatio && vulnerable(p)) {
       p.squish += dt;
       if (p.squish > TUNE.squishGrace) kill(w, p, 'squish', -1);
     } else p.squish = Math.max(0, p.squish - dt * 2);
   }
 }
 
-function overlapsBody(b, px, py, pr) {
+export function overlapsBody(b, px, py, pr) {
   const [a0x, a0y, a1x, a1y] = ends(b);
   const [cx, cy] = closestSeg(a0x, a0y, a1x, a1y, px, py, px, py);
   return len(px - cx, py - cy) <= b.r + pr;
 }
 
-function hazards(w, dt) {
+function hazards(w, dt, contacts = []) {
+  const contactPairs = new Set(contacts.map(contact => {
+    const lo = Math.min(contact.a.id, contact.b.id), hi = Math.max(contact.a.id, contact.b.id);
+    return `${lo}:${hi}`;
+  }));
   // Eliminated players drop their middle ability. Touching the pickup replaces
   // only the collector's middle slot, and that change persists into later
   // rounds unless they change it in ability select.
@@ -1810,6 +1923,7 @@ function hazards(w, dt) {
       if (len(p.x - pickup.x, p.y - pickup.y) > p.r + pickup.r) continue;
       const slot = { id: pickup.abilityId, cd: 0, down: false, t: 0, state: 0, data: 0 };
       while (p.slots.length < TUNE.slots) p.slots.push({ id: '', cd: 0, down: false, t: 0, state: 0, data: 0 });
+      cancelSlot(w, p, p.slots[1]);
       p.slots[1] = slot;
       while (p.loadout.length < TUNE.slots) p.loadout.push('random');
       p.loadout[1] = pickup.abilityId;
@@ -1829,7 +1943,8 @@ function hazards(w, dt) {
       // A falling meteor cannot crush someone who is themselves a rock, a drill
       // or mid-roll: those forms win the collision.
       if (b.kind === 'bopl' && b.form === 'meteor' && (p.form === 'rock' || p.form === 'drill' || p.form === 'roll')) continue;
-      if (!overlapsBody(b, p.x, p.y, p.r)) continue;
+      const lo = Math.min(b.id, p.id), hi = Math.max(b.id, p.id);
+      if (!overlapsBody(b, p.x, p.y, p.r) && !contactPairs.has(`${lo}:${hi}`)) continue;
       kill(w, p, b.kind === 'bopl' ? b.form : b.kind, b.kind === 'bopl' ? b.pid : b.owner);
       if (b.kind === 'arrow' || b.kind === 'spike') { if (b.kind === 'arrow') b.dead = true; }
       break;
@@ -1838,14 +1953,15 @@ function hazards(w, dt) {
   // Drill bits: only the leading tip bites.
   for (const d of w.players) {
     if (!d.alive || d.form !== 'drill') continue;
-    const tx = d.x + d.input.ax * d.r, ty = d.y + d.input.ay * d.r;
+    const angle = d.drillAng ?? Math.atan2(d.input.ay, d.input.ax);
+    const tx = d.x + Math.cos(angle) * d.r, ty = d.y + Math.sin(angle) * d.r;
     for (const p of w.players) {
       if (p === d || !vulnerable(p)) continue;
       if (len(p.x - tx, p.y - ty) < p.r + d.r * 0.5) kill(w, p, 'drill', d.pid);
     }
   }
   // Tesla arcs between a player's own pair of coils.
-  const coils = w.bodies.filter(b => b.kind === 'coil' && !b.dead);
+  const coils = w.bodies.filter(b => b.kind === 'coil' && !b.dead && b.hidden <= 0);
   for (let i = 0; i < coils.length; i++) {
     for (let j = i + 1; j < coils.length; j++) {
       const a = coils[i], b = coils[j];
@@ -1862,7 +1978,7 @@ function hazards(w, dt) {
         }
       }
       for (const cloud of w.bodies) {
-        if (cloud.kind !== 'smoke' || cloud.dead || cloud.lit) continue;
+        if (cloud.kind !== 'smoke' || cloud.dead || cloud.hidden > 0 || cloud.lit) continue;
         const [cax, cay, cbx, cby] = closestSeg(a.x, a.y, b.x, b.y, cloud.x, cloud.y, cloud.x, cloud.y);
         if (len(cbx - cax, cby - cay) < cloud.r + 0.3) igniteSmoke(w, cloud);
       }
@@ -1997,7 +2113,11 @@ export function step(w, dt) {
   const held = [];
   for (const b of w.bodies) {
     if (b.dead) continue;
-    if (!awake(b)) { held.push([b, b.im, b.ii]); b.im = 0; b.ii = 0; continue; }
+    if (!awake(b)) {
+      held.push([b, b.im, b.ii, b.vx, b.vy, b.av]);
+      b.im = 0; b.ii = 0; b.vx = 0; b.vy = 0; b.av = 0;
+      continue;
+    }
     if (b.hidden > 0) continue;
     if (b.kind === 'bopl' && !b.alive) continue;
     if (b.im > 0) {
@@ -2014,8 +2134,10 @@ export function step(w, dt) {
   const contacts = makeContacts(w);
   solve(w, contacts, dt);
   postSolve(w, contacts, dt);
-  for (const [b, im, ii] of held) { b.im = im; b.ii = ii; }
-  if (w.phase !== 'intro') hazards(w, dt);
+  for (const [b, im, ii, vx, vy, av] of held) {
+    b.im = im; b.ii = ii; b.vx = vx; b.vy = vy; b.av = av;
+  }
+  if (w.phase !== 'intro') hazards(w, dt, contacts);
   boundsCheck(w);
   removeDead(w);
   checkRound(w);
@@ -2036,7 +2158,7 @@ const r2 = v => Math.round(v * 100) / 100;
 const r3 = v => Math.round(v * 1000) / 1000;
 // Six 15 Hz samples cover the short render delay plus ordinary packet jitter.
 const MAX_INTERPOLATION_SAMPLES = 6;
-const MAX_INTERPOLATION_STEP = 2.5;
+const MAX_INTERPOLATION_STEP = TUNE.maxSpeed / TUNE.snapshotHz * 1.25;
 
 export function markSpeculative(w) { w.nextId = LOCAL_ID_BASE; }
 
@@ -2051,7 +2173,10 @@ function boplDynamic(p) {
     p.revive ? 1 : 0, r2(p.reviveX), r2(p.reviveY), p.face, r2(p.stretch),
     r2(p.beamLen || 0), r2(p.input.mx), bits, p.eaten,
     p.slots.map(slot => [slot.id, r2(slot.cd), slot.state, r2(slot.t), r2(slot.fuel || 0), slot.data || 0, slot.used ? 1 : 0]),
-    [...p.loadout], r2(p.input.my),
+    [...p.loadout], r2(p.input.my), p.groundId, r3(p.groundNx), r3(p.groundNy), r2(p.av),
+    p.lethal ? 1 : 0, r3(p.rest), p.rollDir || 0, r3(p.grappleLx), r3(p.grappleLy),
+    Number.isFinite(p.drillAng) ? r3(p.drillAng) : null, r2(p.drillSpeed || 0),
+    r2(p.slamDelay || 0), p.digOut ? 1 : 0, r3(p.meteorCharge || 0),
   ];
 }
 
@@ -2070,8 +2195,25 @@ function applyBoplDynamic(p, d, isLocal) {
     }));
   }
   if (Array.isArray(d[34])) p.loadout = [...d[34]];
+  p.groundId = Number.isFinite(d[36]) ? d[36] : -1;
+  p.groundNx = Number.isFinite(d[37]) ? d[37] : 0;
+  p.groundNy = Number.isFinite(d[38]) ? d[38] : -1;
+  p.av = Number(d[39]) || 0;
+  p.lethal = !!d[40];
+  p.rest = Number.isFinite(d[41]) ? d[41] : (p.form === 'rock' ? 0.55 : 0.02);
+  p.rollDir = Number(d[42]) || 0;
+  p.grappleLx = Number(d[43]) || 0;
+  p.grappleLy = Number(d[44]) || 0;
+  p.drillAng = Number.isFinite(d[45]) ? d[45] : undefined;
+  p.drillSpeed = Number(d[46]) || 0;
+  p.slamDelay = Number(d[47]) || 0;
+  p.digOut = !!d[48];
+  p.meteorCharge = Number(d[49]) || 0;
   p.rotates = p.form === 'platform';
-  setMass(p, p.form === 'platform' ? 2.4 : TUNE.boplDensity);
+  const density = p.form === 'platform' ? 2.4
+    : p.form === 'rock' ? TUNE.boplDensity * ABILITY_BY_ID.get('rock').massScale
+      : TUNE.boplDensity;
+  setMass(p, density);
   if (!isLocal) {
     p.input.ax = d[13]; p.input.ay = d[14];
     p.input.mx = d[30];
@@ -2092,6 +2234,7 @@ function bodyDynamic(b) {
     case 'hole': return base.concat([r3(b.core), b.white ? 1 : 0, r2(b.ttl)]);
     case 'boulder': return base.concat([r2(b.ttl), b.lethal ? 1 : 0]);
     case 'orb': return base.concat([r2(b.arm || 0)]);
+    case 'coil': return base.concat([r2(b.ttl), r2(b.arcOff || 0)]);
     default: return base.concat([r2(b.ttl)]);
   }
 }
@@ -2108,6 +2251,7 @@ function applyBodyDynamic(b, d) {
     case 'hole': b.core = d[11]; b.white = !!d[12]; b.ttl = d[13]; break;
     case 'boulder': b.ttl = d[11]; b.lethal = !!d[12]; break;
     case 'orb': b.arm = d[11]; break;
+    case 'coil': b.ttl = d[11]; b.arcOff = d[12]; break;
     default: b.ttl = d[11]; break;
   }
   setMass(b, b.density);
@@ -2118,7 +2262,7 @@ function recordSnapshotPose(b, time, reset) {
   const previous = history[history.length - 1];
   const discontinuity = !!previous && (
     len(b.x - previous.x, b.y - previous.y) > MAX_INTERPOLATION_STEP
-    || previous.alive !== b.alive || previous.hidden !== b.hidden
+    || previous.alive !== b.alive || (previous.hidden > 0) !== (b.hidden > 0)
   );
   history.push({
     time, x: b.x, y: b.y, vx: b.vx, vy: b.vy, ang: b.ang,
@@ -2131,10 +2275,10 @@ function recordSnapshotPose(b, time, reset) {
 export function interpolatedPose(b, time) {
   const history = b.snapshotPoses;
   if (!history?.length || !Number.isFinite(time)) return { x: b.x, y: b.y, ang: b.ang };
-  if (time <= history[0].time) return history[0];
+  if (time <= history[0].time) return { ...history[0] };
   const last = history[history.length - 1];
   if (time >= last.time) {
-    if (last.discontinuity) return last;
+    if (last.discontinuity) return { ...last };
     const ahead = Math.min(0.1, time - last.time);
     return { x: last.x + last.vx * ahead, y: last.y + last.vy * ahead, ang: last.ang };
   }
@@ -2142,7 +2286,7 @@ export function interpolatedPose(b, time) {
     const next = history[i];
     if (time > next.time) continue;
     const previous = history[i - 1];
-    if (next.discontinuity) return previous;
+    if (next.discontinuity) return { ...previous };
     const span = next.time - previous.time;
     const amount = span > 0 ? clamp((time - previous.time) / span, 0, 1) : 1;
     const amount2 = amount * amount;
@@ -2160,7 +2304,7 @@ export function interpolatedPose(b, time) {
       ang: previous.ang + angle * amount,
     };
   }
-  return last;
+  return { ...last };
 }
 
 export function snapshot(w, sent) {
@@ -2185,6 +2329,15 @@ export function snapshot(w, sent) {
   };
 }
 
+function predictionSignature(p) {
+  return [
+    p.form,
+    p.invis > 0 ? 1 : 0,
+    p.grappleId === -1 ? 0 : 1,
+    ...p.slots.flatMap(slot => [slot.state, slot.cd > 0 ? 1 : 0, slot.used ? 1 : 0]),
+  ].join(':');
+}
+
 export function applySnapshot(w, snap, localPid, blend) {
   w.tick = snap.k; w.t = snap.t; w.phase = snap.ph; w.phaseT = snap.pt; w.sudden = snap.sd;
   w.nextAbilitySpawn = (Math.floor(w.t / 40) + 1) * 40;
@@ -2196,9 +2349,26 @@ export function applySnapshot(w, snap, localPid, blend) {
   for (const spec of snap.s || []) {
     known.add(spec.id);
     if (!bodyById(w, spec.id)) {
-      const body = { ...spec, dead: false };
-      w.bodies.push(body);
-      if (body.kind === 'bopl') w.players.push(body);
+      const predicted = w.bodies.find(body => body.id >= LOCAL_ID_BASE && !body.dead
+        && body.kind === spec.kind
+        && (spec.duplicatorSource == null
+          ? body.duplicatorSource == null
+          : body.duplicatorSource === spec.duplicatorSource)
+        && (body.kind === 'bopl' ? body.pid === spec.pid : body.owner === spec.owner && body.slot === spec.slot));
+      if (predicted) {
+        const oldId = predicted.id;
+        Object.assign(predicted, spec, { id: spec.id, dead: false });
+        for (const player of w.players) {
+          if (player.grappleId === oldId) player.grappleId = spec.id;
+          if (player.heldId === oldId) player.heldId = spec.id;
+          for (const slot of player.slots) if (slot.data === oldId) slot.data = spec.id;
+        }
+        for (const body of w.bodies) if (body.host === oldId) body.host = spec.id;
+      } else {
+        const body = { ...spec, dead: false };
+        w.bodies.push(body);
+        if (body.kind === 'bopl') w.players.push(body);
+      }
     }
   }
   for (const d of snap.b || []) {
@@ -2206,14 +2376,18 @@ export function applySnapshot(w, snap, localPid, blend) {
     const b = bodyById(w, d[0]);
     if (b) {
       applyBodyDynamic(b, d);
-      recordSnapshotPose(b, snap.t, !blend);
+      recordSnapshotPose(b, snap.k * TUNE.step, !blend);
     }
   }
   for (const d of snap.p || []) known.add(d[0]);
-  // Anything the client speculated locally is dropped: the relay is the truth.
+  // Keep a fresh predicted spawn until its authoritative counterpart arrives.
+  // Rejected predictions expire quickly instead of blinking out every snapshot.
   let write = 0;
   for (const b of w.bodies) {
-    if (b.id >= LOCAL_ID_BASE || !known.has(b.id)) continue;
+    const localPrediction = b.id >= LOCAL_ID_BASE && !b.dead
+      && (b.owner === localPid || b.pid === localPid || b.duplicatorOwner === localPid)
+      && w.t - b.spawn < 0.75;
+    if (!localPrediction && !known.has(b.id)) continue;
     w.bodies[write++] = b;
   }
   w.bodies.length = write;
@@ -2224,18 +2398,33 @@ export function applySnapshot(w, snap, localPid, blend) {
     if (!p) continue;
     const isLocal = p.pid === localPid;
     if (blend && isLocal && p.alive && d[8]) {
+      const predictedSignature = predictionSignature(p);
+      const predicted = {
+        form: p.form, formT: p.formT, fuel: p.fuel, charge: p.charge,
+        slots: p.slots, grappleId: p.grappleId, grappleLen: p.grappleLen,
+        grappleLx: p.grappleLx, grappleLy: p.grappleLy, heldId: p.heldId,
+        iframes: p.iframes, invis: p.invis, lethal: p.lethal, rest: p.rest,
+        r: p.r, hx: p.hx, av: p.av, rotates: p.rotates,
+        rollDir: p.rollDir, drillAng: p.drillAng, drillSpeed: p.drillSpeed,
+        slamDelay: p.slamDelay, digOut: p.digOut, meteorCharge: p.meteorCharge,
+        mass: p.mass, im: p.im, ii: p.ii,
+      };
       const ex = d[1] - p.x, ey = d[2] - p.y;
       const err = len(ex, ey);
-      const k = err > 2.5 ? 1 : 0.06;
+      const snapDistance = TUNE.maxSpeed / TUNE.snapshotHz * 1.25;
+      const k = err > snapDistance ? 1 : 0.06;
       const keepX = p.x + ex * k, keepY = p.y + ey * k;
       const keepVx = p.vx, keepVy = p.vy;
       applyBoplDynamic(p, d, true);
+      const contradicted = predictionSignature(p) !== predictedSignature;
+      p.authorityMismatch = contradicted ? (p.authorityMismatch || 0) + 1 : 0;
+      if (p.authorityMismatch < 6) Object.assign(p, predicted);
       p.x = keepX; p.y = keepY;
-      const velocityK = err > 2.5 ? 1 : 0.15;
+      const velocityK = err > snapDistance ? 1 : 0.15;
       p.vx = keepVx + (p.vx - keepVx) * velocityK;
       p.vy = keepVy + (p.vy - keepVy) * velocityK;
     } else applyBoplDynamic(p, d, isLocal);
-    recordSnapshotPose(p, snap.t, !blend);
+    recordSnapshotPose(p, snap.k * TUNE.step, !blend);
   }
   w.nextId = Math.max(w.nextId, LOCAL_ID_BASE);
 }

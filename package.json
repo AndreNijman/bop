@@ -7,12 +7,14 @@
   "scripts": {
     "dev": "wrangler dev",
     "serve": "npx serve . -l 4173",
-    "check": "node --check game.js && node --check worker.js && node --check sim.js && node tools/sim-test.mjs",
+    "check": "node --check game.js && node --check worker.js && node --check sim.js && node --check bots.js && node --check render.js && node --check audio.js && node --check net.js && node --check data.js && node tools/sim-test.mjs && node --test tools/worker-test.mjs",
     "balance": "node tools/balance.mjs",
     "test:bots": "node tools/balance.mjs --mode melee -n 120 --quiet --assert-pacing",
     "test": "node tools/smoke.mjs",
+    "test:abilities": "node tools/playtest.mjs --all",
     "test:practice": "node tools/practice-smoke.mjs",
     "test:mp": "node tools/mp-smoke.mjs",
+    "test:worker": "node --test tools/worker-test.mjs",
     "test:mp:live": "BASE_URL=https://bop.andrenijman.com LIVE_RELAY=https://bop-relay.tung-tung-tung-sahur.workers.dev node tools/mp-smoke.mjs",
     "deploy": "wrangler deploy"
   },

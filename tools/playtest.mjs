@@ -1,8 +1,7 @@
 // Play the game and report back.
 //
-// Not an assertion harness: this drives real input through a real browser, then
-// dumps telemetry and screenshots so a human (or an agent) can look at whether
-// an ability actually behaves the way it is supposed to.
+// This drives real input through a real browser, rejects sessions that never use
+// the requested ability, then dumps telemetry and screenshots for visual review.
 //
 //   node tools/playtest.mjs                       # a few rounds of everything
 //   node tools/playtest.mjs grenade dash beam     # inspect one loadout
@@ -46,8 +45,7 @@ async function session(page, label, holdMs) {
 
   // Watch the simulation from inside the page so nothing is missed between polls.
   await page.evaluate(() => {
-    window.__watch = { causes: {}, forms: {}, peakBodies: 0, ticks: 0, sizes: [] };
-    const seen = new Set();
+    window.__watch = { causes: {}, forms: {}, peakBodies: 0, ticks: 0, sizes: [], used: false };
     window.__poll = () => {
       const s = window.BOP.state();
       const canvas = document.querySelector('#game');
@@ -57,15 +55,18 @@ async function session(page, label, holdMs) {
       if (me) {
         window.__watch.forms[me.form] = (window.__watch.forms[me.form] || 0) + 1;
         window.__watch.sizes.push(me.size);
+        const slot = me.slots[0];
+        if (slot && (slot.state > 0 || slot.cd > 0)) window.__watch.used = true;
       }
-      return { state: s, me };
+      return { state: s, me, used: window.__watch.used };
     };
   });
 
   for (let beat = 0; beat < 14; beat++) {
     const dir = beat % 4 < 2 ? 'KeyD' : 'KeyA';
     await page.keyboard.down(dir);
-    if (beat % 3 === 0) { await page.keyboard.down('Space'); }
+    // Let grounded-only abilities get a clean first attempt before jumping.
+    if (beat % 3 === 2) { await page.keyboard.down('Space'); }
 
     // Aim at whoever is nearest, then use the ability under test.
     const aim = await page.evaluate(() => {
@@ -76,7 +77,8 @@ async function session(page, label, holdMs) {
       return { w: rect.width, h: rect.height };
     });
     if (aim) {
-      await page.mouse.move(aim.w * (0.3 + 0.4 * Math.random()), aim.h * (0.35 + 0.3 * Math.random()));
+      const side = beat % 2 ? 0.65 : 0.35;
+      await page.mouse.move(aim.w * side, aim.h * (0.42 + (beat % 3) * 0.08));
       await page.mouse.down();
       await page.waitForTimeout(holdMs);
       await page.mouse.up();
@@ -87,11 +89,12 @@ async function session(page, label, holdMs) {
 
     const sample = await page.evaluate(() => window.__poll());
     if (sample?.me) log.forms.add(sample.me.form);
-    if (beat === 4 || beat === 9) {
+    if (beat === 4) {
       const path = `shots/play-${label}-${beat}.png`;
       await page.screenshot({ path });
       log.shots.push(path);
     }
+    if (beat >= 4 && sample?.used) break;
     const phase = sample?.state?.phase;
     if (phase === 'over') break;
     if (sample?.me && !sample.me.alive) {
@@ -112,13 +115,15 @@ try {
 
   for (const loadout of loadouts) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-    const url = `${base}/?kit=${loadout.join(',')}`;
+    const url = `${base}/?calm=1&map=meadow&kit=${loadout.join(',')}`;
     await page.goto(url, { waitUntil: 'networkidle' });
     await page.fill('#player-name', 'Playtest');
     await page.click('#play-offline');
     const ability = ABILITIES.find(a => a.id === loadout[0]);
     const hold = ability.kind === 'tap' ? 60 : ability.kind === 'channel' ? 900 : Math.round((ability.charge || 0.6) * 1000 + 120);
     const report = await session(page, loadout[0], hold);
+    if (report.errors.length) throw new Error(`${loadout[0]} browser error: ${report.errors[0]}`);
+    if (!report.watch.used) throw new Error(`${loadout[0]} never activated`);
     const forms = Object.entries(report.watch.forms).map(([k, v]) => `${k}:${v}`).join(' ');
     const sizes = report.watch.sizes;
     console.log(

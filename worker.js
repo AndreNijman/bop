@@ -10,9 +10,9 @@
 //   GET /lobbies  - public lobby directory
 //   GET /ws?room= - websocket, first message must be create or join
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js';
-import { createWorld, step, applyInput, snapshot } from './sim.js';
-import { createBrain, driveBot } from './bots.js';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js?v=20260821-3';
+import { createWorld, step, applyInput, snapshot } from './sim.js?v=20260821-3';
+import { createBrain, driveBot } from './bots.js?v=20260821-3';
 
 const TICK_MS = 1000 / 60;
 const SNAPSHOT_EVERY = 4;                 // 15 Hz
@@ -328,18 +328,25 @@ export class GameRoom {
 
     if (message.t === 'create') {
       if (this.roster.size) { this.reject(session, 'a lobby with that name already exists'); return; }
+      const password = await hash(message.password || '');
+      if (this.roster.size) { this.reject(session, 'a lobby with that name already exists'); return; }
       this.room = requested;
       this.key = key;
-      this.password = await hash(message.password || '');
+      this.password = password;
       this.settings.max = clamp(Math.round(Number(message.settings?.max) || TUNE.maxPlayers), 2, TUNE.maxPlayers);
       this.settings.bots = 0;
       this.settings.wins = clamp(Math.round(Number(message.settings?.wins) || TUNE.winsToTake), 1, 15);
     } else {
-      if (!this.roster.size || !this.key) { this.reject(session, 'no lobby has that name'); return; }
+      if (!this.roster.size || this.key !== key) { this.reject(session, 'no lobby has that name'); return; }
       if (this.phase !== 'lobby') { this.reject(session, 'that match has already started'); return; }
-      const humans = [...this.roster.values()].filter(r => !r.bot).length;
+      let humans = [...this.roster.values()].filter(r => !r.bot).length;
       if (humans >= this.settings.max) { this.reject(session, 'that lobby is full'); return; }
-      if (this.password && !constantTimeEqual(this.password, await hash(message.password || ''))) {
+      const suppliedPassword = await hash(message.password || '');
+      if (!this.roster.size || this.key !== key) { this.reject(session, 'no lobby has that name'); return; }
+      if (this.phase !== 'lobby') { this.reject(session, 'that match has already started'); return; }
+      humans = [...this.roster.values()].filter(r => !r.bot).length;
+      if (humans >= this.settings.max) { this.reject(session, 'that lobby is full'); return; }
+      if (this.password && !constantTimeEqual(this.password, suppliedPassword)) {
         this.reject(session, 'wrong lobby password');
         return;
       }
@@ -386,7 +393,16 @@ export class GameRoom {
     const humans = [...this.roster.values()].filter(r => !r.bot);
     if (!humans.length) { this.reset(); return; }
     if (session.pid === this.host) this.host = humans[0].pid;
+    if (session.pid === this.lastWinner) {
+      const replacement = [...this.roster.values()].find(record => record.team === this.lastWinnerTeam);
+      this.lastWinner = replacement?.pid ?? -1;
+      if (!replacement) this.lastWinnerTeam = -1;
+    }
     if (this.phase !== 'lobby' && humans.length < 2) { this.returnToLobby(); return; }
+    if (this.phase === 'draft' && new Set(humans.map(record => record.team)).size < 2) {
+      this.returnToLobby();
+      return;
+    }
     this.syncBots();
     this.sendLobby();
     this.syncRegistry();
@@ -607,12 +623,14 @@ export class GameRoom {
       const roster = this.roster.get(player.pid);
       if (roster && !player.clone && player.loadout) roster.abilities = [...player.loadout];
     }
-    const winningRoster = [...this.roster.values()].filter(record => record.team === winningTeam);
+    const winningRoster = winningTeam < 0
+      ? []
+      : [...this.roster.values()].filter(record => record.team === winningTeam);
     const representative = winningRoster[0] || null;
-    const resultWinner = representative?.pid ?? winner;
+    const resultWinner = representative?.pid ?? -1;
     this.lastWinner = resultWinner;
-    this.lastWinnerTeam = winningTeam;
-    if (winningTeam >= 0) for (const teammate of winningRoster) teammate.wins++;
+    this.lastWinnerTeam = representative ? winningTeam : -1;
+    if (representative) for (const teammate of winningRoster) teammate.wins++;
     const standings = [...this.roster.values()].map(r => ({ pid: r.pid, name: r.name, color: r.color, team: r.team, wins: r.wins, bot: r.bot }));
     this.broadcast({ t: 'over', winner: resultWinner, standings, round: this.round });
     if (representative && representative.wins >= this.settings.wins) {
@@ -654,7 +672,7 @@ export class GameRoom {
 
     const elapsed = Math.min(250, now - this.lastTick);
     this.lastTick = now;
-    this.accumulator += elapsed / 1000;
+    this.accumulator = Math.min(this.accumulator + elapsed / 1000, TUNE.step * 4);
     let steps = 0;
     while (this.accumulator >= TUNE.step && steps < 4) {
       const shared = new Map();

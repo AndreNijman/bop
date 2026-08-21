@@ -6,7 +6,7 @@
 // particles are all short-lived circles. That keeps the whole game a few text
 // files and makes it look the same on every device.
 
-import { THEMES, COLORS, ABILITY_BY_ID, clamp } from './data.js';
+import { THEMES, COLORS, ABILITY_BY_ID, clamp } from './data.js?v=20260821-3';
 
 const TAU = Math.PI * 2;
 const pickupIcons = new Map();

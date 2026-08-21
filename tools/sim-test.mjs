@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { TUNE, ABILITIES, MAPS, resolveLoadout, sizeScale } from '../data.js';
-import { createWorld, step, applyInput, snapshot, applySnapshot, interpolatedPose, addBody, bodyById, markSpeculative, kill } from '../sim.js';
+import { createWorld, step, applyInput, snapshot, applySnapshot, interpolatedPose, addBody, bodyById, markSpeculative, kill, overlapsBody } from '../sim.js';
 import { createBrain, driveBot } from '../bots.js';
 
 let passed = 0;
@@ -53,6 +53,16 @@ check('every map has spawn points for a full lobby', () => {
     for (const spawn of map.spawns) {
       assert.ok(Math.abs(spawn[0]) < map.bounds.x, `${map.id} spawn outside bounds`);
       assert.ok(Math.abs(spawn[1]) < map.bounds.y, `${map.id} spawn outside bounds`);
+    }
+  }
+});
+
+check('active spawn points start clear of terrain', () => {
+  for (let mapIndex = 0; mapIndex < MAPS.length; mapIndex++) {
+    const w = world(Array.from({ length: TUNE.maxPlayers }, () => []), mapIndex, TUNE.maxPlayers);
+    for (const player of w.players) {
+      const overlap = w.bodies.find(body => body.kind === 'plat' && overlapsBody(body, player.x, player.y, player.r - 1e-4));
+      assert.equal(overlap, undefined, `${MAPS[mapIndex].id} player ${player.idx + 1} spawned inside terrain`);
     }
   }
 });
@@ -132,12 +142,47 @@ check('screen-relative movement hands off around sides and undersides', () => {
   drive(0.4, { mx: 1 });
   assert.ok(p.x > 1.2 && p.y < 0, `D did not move right over the top (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
   drive(0.5, { my: 1 });
-  assert.ok(p.x > 1.5 && p.y > 0, `S did not move down the right side (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+  assert.ok(p.x > 1.2 && p.y > 1, `S did not move down the right side (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
   drive(1, { mx: -1 });
-  assert.ok(p.x < 0 && p.y > 1, `A did not move left across the underside (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+  assert.ok(p.x < -1.5 && p.y > 0, `A did not move left across the underside (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
   drive(0.8, { my: -1 });
-  assert.ok(p.x < -1.5 && p.y < 0.3, `W did not move up the left side (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+  assert.ok(p.x < 0 && p.y < -1.5, `W did not move up the left side (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
   assert.ok(p.grounded, 'bopl detached during a cardinal direction hand-off');
+});
+
+check('surface movement has equal traction in all four cardinal directions', () => {
+  const trials = [
+    [0, -1, { mx: 1 }],
+    [1, 0, { my: 1 }],
+    [0, 1, { mx: -1 }],
+    [-1, 0, { my: -1 }],
+  ];
+  const distances = trials.map(([nx, ny, input], trial) => {
+    const w = world([[], []], MAPS.findIndex(map => map.theme === 'space'));
+    for (const body of w.bodies) if (body.kind === 'plat') body.dead = true;
+    const ball = addBody(w, {
+      kind: 'plat', x: 0, y: 0, hx: 0, r: 1.55, baseHx: 0, baseR: 1.55,
+      ptype: 'ground', rotates: true, density: 80, gravity: 0, drag: 0,
+      spring: 1, torqueSpring: 1, anchorX: 0, anchorY: 0, anchorAng: 0,
+      homeX: 0, homeY: 0, fric: 0.95, rest: 0,
+    });
+    const [p, q] = w.players;
+    const radius = ball.r + p.r - 0.01;
+    p.x = nx * radius; p.y = ny * radius;
+    q.x = -8; q.y = -4;
+    w.gravity = 0;
+    w.phase = 'play'; w.phaseT = 0;
+    run(w, 8 * TUNE.step, () => { applyInput(p, idle); applyInput(q, idle); });
+    const start = Math.atan2(p.y, p.x);
+    run(w, 18 * TUNE.step, () => { applyInput(p, { ...idle, ...input }); applyInput(q, idle); });
+    let distance = Math.atan2(p.y, p.x) - start;
+    while (distance > Math.PI) distance -= Math.PI * 2;
+    while (distance < -Math.PI) distance += Math.PI * 2;
+    assert.ok(p.grounded, `trial ${trial + 1} detached from the surface`);
+    return Math.abs(distance);
+  });
+  assert.ok(Math.max(...distances) - Math.min(...distances) < 0.04,
+    `cardinal surface speeds diverged: ${distances.map(value => value.toFixed(2)).join(', ')}`);
 });
 
 check('side jumps rise diagonally and underside jumps only detach', () => {
@@ -219,6 +264,49 @@ check('being crushed pops a bopl', () => {
   assert.equal(p.alive, false, 'bopl survived a platform pressing it into the floor');
 });
 
+check('dash invulnerability protects against crushing', () => {
+  const w = world();
+  w.phase = 'play'; w.phaseT = 0; w.gravity = 0;
+  w.bodies = w.bodies.filter(body => body.kind === 'bopl');
+  const [p, other] = w.players;
+  p.x = 0; p.y = 0; p.iframes = 1;
+  other.x = 8; other.y = 0;
+  for (const y of [-0.58, 0.58]) addBody(w, {
+    kind: 'plat', x: 0, y, hx: 2, r: 0.3, baseHx: 2, baseR: 0.3,
+    im: 0, rotates: false, gravity: 0, fric: 0.9, rest: 0,
+  });
+  run(w, 0.3, () => { applyInput(p, idle); applyInput(other, idle); });
+  assert.equal(p.alive, true, 'iframes did not protect against a sustained crush');
+});
+
+check('deep solid lethal impacts still register after contact solving', () => {
+  const w = world();
+  w.phase = 'play'; w.phaseT = 0; w.gravity = 0;
+  w.bodies = w.bodies.filter(body => body.kind === 'bopl');
+  const [target, other] = w.players;
+  target.x = 0; target.y = 0; target.iframes = 0;
+  other.x = 8; other.y = 0;
+  addBody(w, {
+    kind: 'boulder', x: -20 * TUNE.step, y: 0, vx: 20, r: 0.62, baseR: 0.62,
+    density: 3.4, gravity: 0, drag: 0, lethal: true, ttl: 2,
+  });
+  applyInput(target, idle); applyInput(other, idle);
+  step(w, TUNE.step);
+  assert.equal(target.alive, false, 'the solver separated a lethal boulder before the hit registered');
+});
+
+check('parallel capsules resolve to contact without a visible gap', () => {
+  const w = world();
+  w.phase = 'play'; w.phaseT = 0; w.gravity = 0;
+  w.bodies = w.bodies.filter(body => body.kind === 'bopl');
+  for (const player of w.players) { player.x = player.pid * 7; player.y = -4; }
+  const fixed = addBody(w, { kind: 'plat', x: 0, y: 0, hx: 2, r: 0.5, im: 0, ptype: 'free', spring: 0, rotates: false, gravity: 0, fric: 0.9, rest: 0 });
+  const moving = addBody(w, { kind: 'plat', x: 0, y: 0.67, hx: 2, r: 0.5, ptype: 'free', spring: 0, density: 9, rotates: true, gravity: 0, drag: 0, fric: 0.9, rest: 0 });
+  step(w, TUNE.step);
+  const gap = Math.abs(moving.y - fixed.y) - moving.r - fixed.r;
+  assert.ok(Math.abs(gap) < 0.05, `parallel capsules were separated by ${gap.toFixed(3)} units`);
+});
+
 check('water kills and space has none', () => {
   const w = world([[], []], 0);
   const p = w.players[0];
@@ -291,6 +379,89 @@ check('elimination drops the middle ability and pickup replaces the middle slot'
   run(w, 0.7, () => { applyInput(collector, idle); applyInput(third, idle); });
   assert.equal(collector.slots[1].id, 'grenade', 'pickup did not replace the collector middle slot');
   assert.equal(collector.loadout[1], 'grenade', 'pickup was not persisted into the selected loadout');
+});
+
+check('replacing an active middle ability cleans up its form', () => {
+  const w = world([['dash', 'bow', 'mine'], []]);
+  const [p, other] = w.players;
+  w.phase = 'play'; w.phaseT = 0;
+  other.x = 8; other.y = -4;
+  addBody(w, { kind: 'ability', abilityId: 'gust', x: p.x, y: p.y, r: 0.3, im: 0, gravity: 0, pickupDelay: 0 });
+  applyInput(p, { ...idle, ab: [false, true, false] });
+  applyInput(other, idle);
+  step(w, TUNE.step);
+  assert.equal(p.slots[1].id, 'gust');
+  assert.equal(p.form, 'normal', 'replacing Bow left the collector locked in Bow form');
+});
+
+check('grounded teleport and Revival clear stale footing and form physics', () => {
+  const teleport = world([['teleport'], []]);
+  teleport.phase = 'play'; teleport.phaseT = 0;
+  const [traveler, bystander] = teleport.players;
+  traveler.x = 0; traveler.y = 1.33; traveler.grounded = true; traveler.groundId = 1;
+  bystander.x = -8; bystander.y = -4;
+  addBody(teleport, { kind: 'bubble', x: 8, y: -4, r: 1.15, owner: traveler.pid, slot: 0, im: 0, gravity: 0, ttl: 10 });
+  applyInput(traveler, { ...idle, ab: [true, false, false] });
+  applyInput(bystander, idle);
+  step(teleport, TUNE.step);
+  assert.equal(traveler.groundId, -1, 'Teleport retained the platform at the old location');
+  assert.ok(Math.hypot(traveler.vx, traveler.vy) < 0.6, 'Teleport inherited velocity from stale footing');
+
+  const revival = world([['rock', 'revival'], []]);
+  revival.phase = 'play'; revival.phaseT = 0;
+  const [p] = revival.players;
+  applyInput(p, { ...idle, ab: [true, false, false] });
+  step(revival, TUNE.step);
+  p.grounded = true; p.groundId = 1;
+  addBody(revival, { kind: 'orb', x: 7, y: -3, r: 0.3, owner: p.pid, slot: 1, im: 0, gravity: 0 });
+  const grenade = addBody(revival, { kind: 'grenade', x: p.x, y: p.y, r: 0.22, owner: p.pid, held: true, fuse: 3, gravity: 1 });
+  kill(revival, p, 'test');
+  assert.equal(p.form, 'normal');
+  assert.equal(p.rest, 0.02, 'Revival retained Rock restitution');
+  assert.equal(p.groundId, -1, 'Revival retained stale footing');
+  assert.equal(grenade.held, false, 'Revival kept a reset grenade attached');
+  assert.ok(Math.abs(p.mass - Math.PI * p.r * p.r * TUNE.boplDensity) < 1e-6, 'Revival retained Rock mass');
+});
+
+check('Throw can quarry a platform-form bopl without corrupting physics', () => {
+  const w = world([['platform'], ['throw']]);
+  w.phase = 'play'; w.phaseT = 0; w.gravity = 0;
+  w.bodies = w.bodies.filter(body => body.kind === 'bopl');
+  const [host, thrower] = w.players;
+  host.x = 0; host.y = 0;
+  host.form = 'platform'; host.hx = 1.35; host.r = 0.63; host.rotates = true;
+  thrower.x = 0; thrower.y = -host.r - thrower.r + 0.01;
+  thrower.grounded = true; thrower.groundId = host.id;
+  applyInput(host, idle);
+  applyInput(thrower, { ...idle, ab: [true, false, false] });
+  step(w, TUNE.step);
+  applyInput(host, idle);
+  applyInput(thrower, idle);
+  step(w, TUNE.step);
+  for (const key of ['hx', 'r', 'mass', 'im']) assert.ok(Number.isFinite(host[key]), `Throw made host.${key} invalid`);
+  assert.ok(w.bodies.some(body => body.kind === 'boulder'), 'Throw did not create a boulder');
+});
+
+check('Push cannot cancel Rock and Drill keeps boring until it exits terrain', () => {
+  const rock = world([['rock', 'push'], []]);
+  rock.phase = 'play'; rock.phaseT = 0;
+  const [p, other] = rock.players;
+  other.x = 8; other.y = -4;
+  applyInput(p, { ...idle, ab: [true, false, false] }); applyInput(other, idle); step(rock, TUNE.step);
+  applyInput(p, { ...idle, ab: [false, true, false] }); applyInput(other, idle); step(rock, TUNE.step);
+  assert.equal(p.form, 'rock', 'Push cancelled Rock form');
+  assert.equal(p.slots[1].state, 0, 'Push started while Rock was active');
+
+  const drill = world([['drill'], []]);
+  drill.phase = 'play'; drill.phaseT = 0; drill.gravity = 0;
+  const [d, target] = drill.players;
+  const platform = drill.bodies.find(body => body.kind === 'plat');
+  d.x = platform.x; d.y = platform.y;
+  target.x = 8; target.y = -4;
+  applyInput(d, { ...idle, ab: [true, false, false] }); applyInput(target, idle); step(drill, TUNE.step);
+  applyInput(d, idle); applyInput(target, idle); step(drill, TUNE.step);
+  assert.equal(d.form, 'drill', 'Drill left its form while still inside terrain');
+  assert.equal(d.digOut, true, 'Drill did not enter its bore-out state');
 });
 
 check('black hole is once per round but Revival restores it', () => {
@@ -453,6 +624,78 @@ check('team rounds, Time Stop and mine targeting respect team membership', () =>
   kill(w, w.players[3], 'test');
   step(w, TUNE.step);
   assert.equal(w.winner, 1, 'team round did not resolve to a surviving team member');
+});
+
+check('Time Stop does not carry its owner on a frozen platform', () => {
+  const w = world([['timestop'], []]);
+  w.phase = 'play'; w.phaseT = 0; w.gravity = 0;
+  w.bodies = w.bodies.filter(body => body.kind === 'bopl');
+  const [owner, other] = w.players;
+  const platform = addBody(w, {
+    kind: 'plat', x: 0, y: 0, vx: 5, hx: 2, r: 0.5, baseHx: 2, baseR: 0.5,
+    ptype: 'free', density: 9, rotates: true, gravity: 0, drag: 0, fric: 0.9, rest: 0,
+  });
+  owner.x = 0; owner.y = -platform.r - owner.r + 0.01;
+  owner.grounded = true; owner.groundId = platform.id;
+  other.x = 8; other.y = -4;
+  w.freeze = { owner: owner.pid, t: 1 };
+  const ownerX = owner.x, platformX = platform.x;
+  run(w, 0.1, () => { applyInput(owner, idle); applyInput(other, idle); });
+  assert.equal(platform.x, platformX, 'frozen platform moved');
+  assert.ok(Math.abs(owner.x - ownerX) < 0.05, 'stored platform velocity carried the Time Stop owner');
+});
+
+check('ability edge contracts preserve charge, arming, stealth and grapple release', () => {
+  const mineWorld = world([[], []]);
+  mineWorld.phase = 'play'; mineWorld.phaseT = 0; mineWorld.gravity = 0;
+  mineWorld.bodies = mineWorld.bodies.filter(body => body.kind === 'bopl');
+  const [owner, victim] = mineWorld.players;
+  owner.x = -7; owner.y = -4; victim.x = 0; victim.y = -4; victim.iframes = 0;
+  addBody(mineWorld, {
+    kind: 'mine', x: 0, y: -4, r: 0.24, owner: owner.pid, state: 0,
+    prime: 2, hunt: 3.4, boom: false, density: 1.6, gravity: 0,
+  });
+  run(mineWorld, 0.5, () => { applyInput(owner, idle); applyInput(victim, idle); });
+  assert.equal(victim.alive, true, 'an unarmed mine detonated on contact');
+
+  const invisWorld = world([['invis', 'dash'], []]);
+  invisWorld.phase = 'play'; invisWorld.phaseT = 0; invisWorld.gravity = 0;
+  invisWorld.bodies = invisWorld.bodies.filter(body => body.kind === 'bopl');
+  const [invisible, observer] = invisWorld.players;
+  observer.x = 8; observer.y = -4;
+  applyInput(invisible, { ...idle, ab: [true, false, false] }); applyInput(observer, idle); step(invisWorld, TUNE.step);
+  applyInput(invisible, { ...idle, ab: [false, true, false] }); applyInput(observer, idle); step(invisWorld, TUNE.step);
+  assert.equal(invisible.invis, 0, 'using Dash did not reveal an invisible player');
+
+  const grappleWorld = world([['grapple'], []]);
+  grappleWorld.phase = 'play'; grappleWorld.phaseT = 0; grappleWorld.gravity = 0;
+  grappleWorld.bodies = grappleWorld.bodies.filter(body => body.kind === 'bopl');
+  const [grappler, distant] = grappleWorld.players;
+  grappler.x = 0; grappler.y = 0; grappler.grounded = true; grappler.coyote = TUNE.coyote;
+  distant.x = 8; distant.y = -4;
+  applyInput(grappler, { ...idle, ay: -1, ab: [true, false, false] }); applyInput(distant, idle); step(grappleWorld, TUNE.step);
+  assert.equal(grappler.grappleId, -2, 'grapple hook did not enter flight');
+  applyInput(grappler, { ...idle, ay: -1, jump: true, ab: [true, false, false] }); applyInput(distant, idle); step(grappleWorld, TUNE.step);
+  assert.equal(grappler.grappleId, -1, 'jump did not release an in-flight grapple');
+  assert.equal(grappleWorld.bodies.some(body => body.kind === 'hook'), false, 'released hook remained in the world');
+
+  const meteorWorld = world([['meteor'], []]);
+  meteorWorld.phase = 'play'; meteorWorld.phaseT = 0; meteorWorld.gravity = 0;
+  meteorWorld.bodies = meteorWorld.bodies.filter(body => body.kind === 'bopl');
+  const [meteor, spectator] = meteorWorld.players;
+  meteor.x = 0; meteor.y = -3; spectator.x = 8; spectator.y = -4;
+  run(meteorWorld, 1.05, () => {
+    applyInput(meteor, { ...idle, ab: [true, false, false] }); applyInput(spectator, idle);
+  });
+  applyInput(meteor, idle); applyInput(spectator, idle); step(meteorWorld, TUNE.step);
+  let slamRadius = 0;
+  for (let i = 0; i < 20 && !slamRadius; i++) {
+    meteor.grounded = true;
+    applyInput(meteor, idle); applyInput(spectator, idle);
+    const events = step(meteorWorld, TUNE.step);
+    slamRadius = events.find(event => event.e === 'slam')?.r || 0;
+  }
+  assert.ok(slamRadius > 4.4, `full Meteor charge produced radius ${slamRadius.toFixed(2)}`);
 });
 
 check('audited activation contracts lock, persist and cool down correctly', () => {
@@ -619,6 +862,42 @@ check('growth and shrink change mass and enable eating', () => {
   assert.ok(a.eaten === 1, 'meal was not recorded');
 });
 
+check('repeated resize hits use a stable base and keep white holes reversed', () => {
+  const objectWorld = world();
+  objectWorld.phase = 'play'; objectWorld.phaseT = 0; objectWorld.gravity = 0;
+  objectWorld.bodies = objectWorld.bodies.filter(body => body.kind === 'bopl');
+  objectWorld.players.forEach((player, index) => { player.x = index ? 8 : -8; player.y = -4; });
+  const grenade = addBody(objectWorld, { kind: 'grenade', x: 0, y: -3, r: 0.22, fuse: 20, held: false, gravity: 0 });
+  for (let hit = 0; hit < 2; hit++) {
+    addBody(objectWorld, { kind: 'ray', mode: 'grow', x: 0, y: -3, r: 0.16, owner: 1, gravity: 0, ttl: 1, ox: -2, oy: -3 });
+    step(objectWorld, TUNE.step);
+  }
+  const expected = 0.22 * sizeScale(2);
+  assert.ok(Math.abs(grenade.r - expected) < 1e-6, `Growth compounded radius to ${grenade.r.toFixed(3)}`);
+
+  const holeWorld = world();
+  holeWorld.phase = 'play'; holeWorld.phaseT = 0; holeWorld.gravity = 0;
+  holeWorld.bodies = holeWorld.bodies.filter(body => body.kind === 'bopl');
+  holeWorld.players.forEach((player, index) => { player.x = index ? 8 : -8; player.y = -4; });
+  const hole = addBody(holeWorld, { kind: 'hole', x: 0, y: -3, r: 0.34, core: 0.34, white: false, ttl: 5, im: 0, gravity: 0 });
+  for (let hit = 0; hit < 2; hit++) {
+    addBody(holeWorld, { kind: 'ray', mode: 'shrink', x: 0, y: -3, r: 0.16, owner: 1, gravity: 0, ttl: 1, ox: -2, oy: -3 });
+    step(holeWorld, TUNE.step);
+    assert.equal(hole.white, true, `Shrink hit ${hit + 1} turned a white hole black`);
+  }
+});
+
+check('Blinked objects ignore world effects until they return', () => {
+  const w = world();
+  w.phase = 'play'; w.phaseT = 0; w.gravity = 0;
+  w.bodies = w.bodies.filter(body => body.kind === 'bopl');
+  w.players.forEach((player, index) => { player.x = index ? 8 : -8; player.y = -4; });
+  const hidden = addBody(w, { kind: 'grenade', x: 0.3, y: -3, r: 0.22, fuse: 3, held: false, hidden: 1, gravity: 0 });
+  addBody(w, { kind: 'grenade', x: 0, y: -3, r: 0.22, fuse: 0, held: false, blast: 2.4, impulse: 17, gravity: 0 });
+  step(w, TUNE.step);
+  assert.equal(hidden.fuse, 3, 'an explosion changed a Blink-erased grenade');
+});
+
 check('sudden death drives platforms in strengthening waves', () => {
   const w = world();
   w.phase = 'play'; w.phaseT = 0; w.gravity = 0;
@@ -713,7 +992,7 @@ check('placed traps are lethal on contact', () => {
     run(w, id === 'mine' ? 0.05 : 0.6, () => { applyInput(p, { ...idle, ax: 1, ay: 0, ab: [true, false, false] }); applyInput(q, idle); applyInput(third, idle); });
     if (id === 'mine') {
       p.x = 8;
-      run(w, 0.3, () => { applyInput(p, idle); applyInput(q, idle); applyInput(third, idle); });
+      run(w, 2.2, () => { applyInput(p, idle); applyInput(q, idle); applyInput(third, idle); });
     }
     if (id === 'tesla') {
       // A second coil in the same slot strings the arc.
@@ -752,6 +1031,123 @@ check('bots survive a full match on every map without NaN', () => {
   }
 });
 
+check('every ability remains stable on every map', () => {
+  for (let mapIndex = 0; mapIndex < MAPS.length; mapIndex++) {
+    for (let abilityIndex = 0; abilityIndex < ABILITIES.length; abilityIndex++) {
+      const id = ABILITIES[abilityIndex].id;
+      const players = Array.from({ length: TUNE.maxPlayers }, (_, index) => ({
+        pid: index + 1, name: `P${index + 1}`, color: index, team: index, bot: true,
+        abilities: [id, 'dash', 'grapple'],
+      }));
+      const w = createWorld({ seed: (mapIndex + 1) * 1000 + abilityIndex, mapIndex, players });
+      const brains = new Map(w.players.map((player, index) => [player.pid, createBrain((mapIndex + 1) * 10000 + abilityIndex * 31 + index)]));
+      for (let tick = 0; tick < Math.round(6 / TUNE.step) && w.phase !== 'over'; tick++) {
+        const driven = new Set();
+        for (const player of w.players) {
+          if (!player.alive || driven.has(player.pid)) continue;
+          driveBot(w, player, brains.get(player.pid), TUNE.step);
+          driven.add(player.pid);
+        }
+        step(w, TUNE.step);
+        assert.ok(w.bodies.length < 300, `${MAPS[mapIndex].id}/${id} created ${w.bodies.length} bodies`);
+        if (tick % 60 === 0) sane(w, `${MAPS[mapIndex].id}/${id}`);
+      }
+      sane(w, `${MAPS[mapIndex].id}/${id}`);
+    }
+  }
+});
+
+check('snapshots preserve active-form physics and object state', () => {
+  const setup = { seed: 997, mapIndex: 0, players: [
+    { pid: 1, name: 'remote', color: 0, abilities: ['rock'] },
+    { pid: 2, name: 'other', color: 1, abilities: [] },
+  ] };
+  const server = createWorld(setup);
+  const client = createWorld(setup);
+  server.phase = 'play'; server.phaseT = 0;
+  const p = server.players[0];
+  applyInput(p, { ...idle, ab: [true, false, false] });
+  applyInput(server.players[1], idle);
+  step(server, TUNE.step);
+  p.grounded = true; p.groundId = server.bodies.find(body => body.kind === 'plat').id;
+  p.groundNx = 0.3; p.groundNy = -0.954; p.av = 1.2;
+  p.rollDir = -1; p.grappleLx = 1.4; p.grappleLy = -0.7;
+  p.drillAng = 0.8; p.drillSpeed = 9; p.slamDelay = 0.12; p.meteorCharge = 0.9;
+  const coil = addBody(server, { kind: 'coil', x: 0, y: -3, r: 0.26, hx: 0.3, arcOff: 0.41, ttl: 10, im: 0, gravity: 0 });
+  const sent = new Set();
+  applySnapshot(client, snapshot(server, sent), -1, false);
+  const copy = client.players[0];
+  for (const key of ['form', 'groundId', 'lethal', 'rest', 'rollDir', 'grappleLx', 'grappleLy', 'drillAng', 'drillSpeed', 'slamDelay', 'meteorCharge']) {
+    assert.equal(copy[key], p[key], `snapshot changed ${key}`);
+  }
+  assert.ok(Math.abs(copy.mass - p.mass) < 1e-6, 'snapshot changed Rock mass');
+  coil.arcOff = 0.23;
+  applySnapshot(client, snapshot(server, sent), -1, true);
+  assert.equal(bodyById(client, coil.id).arcOff, 0.23, 'snapshot omitted Tesla arc cooldown');
+});
+
+check('snapshot interpolation uses ticks through frozen game time and Blink decay', () => {
+  const setup = { seed: 996, mapIndex: 0, players: [
+    { pid: 1, name: 'local', color: 0, abilities: [] },
+    { pid: 2, name: 'remote', color: 1, abilities: [] },
+  ] };
+  const server = createWorld(setup);
+  const client = createWorld(setup);
+  const sent = new Set();
+  const remoteServer = server.players[1];
+  server.tick = 0; server.t = 0; remoteServer.hidden = 1; remoteServer.vx = 15;
+  applySnapshot(client, snapshot(server, sent), 1, false);
+  const start = remoteServer.x;
+  server.tick = 4; server.t = 0; remoteServer.x += 1; remoteServer.hidden = 0.93;
+  applySnapshot(client, snapshot(server, sent), 1, true);
+  const remote = client.players[1];
+  const pose = interpolatedPose(remote, 2 * TUNE.step);
+  assert.ok(pose.x > start + 0.35 && pose.x < start + 0.65,
+    `frozen-time Blink pose did not interpolate (${pose.x.toFixed(2)})`);
+});
+
+check('authoritative spawns adopt predicted bodies without a visibility gap', () => {
+  const setup = { seed: 995, mapIndex: 0, players: [
+    { pid: 1, name: 'local', color: 0, abilities: ['bow'] },
+    { pid: 2, name: 'remote', color: 1, abilities: [] },
+  ] };
+  const server = createWorld(setup);
+  const client = createWorld(setup);
+  markSpeculative(client);
+  const predicted = addBody(client, { kind: 'arrow', x: 0, y: -3, r: 0.11, owner: 1, slot: 0, gravity: 0, ttl: 4 });
+  const duplicatedOpponent = addBody(client, {
+    kind: 'boulder', x: 1, y: -3, r: 0.4, owner: 2,
+    duplicatorOwner: 1, duplicatorSlot: 0, gravity: 0, ttl: 4,
+  });
+  const authoritative = addBody(server, { kind: 'arrow', x: 0.2, y: -3, r: 0.11, owner: 1, slot: 0, gravity: 0, ttl: 4 });
+  assert.ok(predicted.id >= 1000000);
+  applySnapshot(client, snapshot(server, new Set()), 1, true);
+  const arrows = client.bodies.filter(body => body.kind === 'arrow');
+  assert.equal(arrows.length, 1, 'predicted projectile blinked out or duplicated');
+  assert.equal(arrows[0].id, authoritative.id, 'predicted projectile did not adopt the authoritative id');
+  assert.ok(client.bodies.includes(duplicatedOpponent), 'predicted duplicate of an opponent object blinked out');
+});
+
+check('persistent authority contradictions eventually override local prediction', () => {
+  const setup = { seed: 994, mapIndex: 0, players: [
+    { pid: 1, name: 'local', color: 0, abilities: ['bow'] },
+    { pid: 2, name: 'remote', color: 1, abilities: [] },
+  ] };
+  const server = createWorld(setup);
+  const client = createWorld(setup);
+  const local = client.players[0];
+  local.form = 'bow';
+  local.slots[0].state = 1;
+  local.slots[0].down = true;
+  for (let packet = 1; packet <= 6; packet++) {
+    server.tick = packet * 4;
+    applySnapshot(client, snapshot(server, packet === 1 ? new Set() : null), 1, true);
+    if (packet < 6) assert.equal(local.form, 'bow', `stale packet ${packet} cancelled fresh prediction`);
+  }
+  assert.equal(local.form, 'normal', 'relay truth never corrected rejected local prediction');
+  assert.equal(local.slots[0].state, 0);
+});
+
 check('snapshot poses interpolate remote motion and preserve teleports', () => {
   const setup = { seed: 998, mapIndex: 0, players: [
     { pid: 1, name: 'local', color: 0, abilities: [] },
@@ -760,20 +1156,20 @@ check('snapshot poses interpolate remote motion and preserve teleports', () => {
   const server = createWorld(setup);
   const client = createWorld(setup);
   const sent = new Set();
-  server.t = 1;
+  server.t = 1; server.tick = 60;
   server.players[1].vx = 10;
   applySnapshot(client, snapshot(server, sent), 1, false);
   const start = server.players[1].x;
   server.players[1].x += 1;
   server.players[1].vx = 10;
-  server.t = 1.1;
+  server.t = 1.1; server.tick = 66;
   applySnapshot(client, snapshot(server, sent), 1, true);
   const remote = client.players.find(player => player.pid === 2);
   const halfway = interpolatedPose(remote, 1.05);
   assert.ok(Math.abs(halfway.x - (start + 0.5)) < 0.01, `remote midpoint was ${halfway.x}`);
 
   server.players[1].x += 4;
-  server.t = 1.2;
+  server.t = 1.2; server.tick = 72;
   applySnapshot(client, snapshot(server, sent), 1, true);
   const beforeTeleport = interpolatedPose(remote, 1.15);
   assert.ok(Math.abs(beforeTeleport.x - (start + 1)) < 0.01, 'teleport was rendered as a sweep across the arena');

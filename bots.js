@@ -6,8 +6,8 @@
 // so each ability gets an explicit trigger rather than a generic "press when
 // ready" rule.
 
-import { TUNE, ABILITY_BY_ID, clamp } from './data.js';
-import { surfacePoint } from './sim.js';
+import { TUNE, ABILITY_BY_ID, clamp } from './data.js?v=20260821-3';
+import { surfacePoint } from './sim.js?v=20260821-3';
 
 const TAU = Math.PI * 2;
 

@@ -5,12 +5,12 @@
 // live in sim.js, all the numbers live in data.js, so this file never decides
 // anything about the game itself.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260821-2';
-import { createWorld, step, applyInput, applySnapshot, interpolatedPose, markSpeculative, snapshot } from './sim.js?v=20260821-2';
-import { createBrain, driveBot } from './bots.js?v=20260821-2';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20260821-2';
-import { createAudio } from './audio.js?v=20260821-2';
-import { createNet, fetchLobbies, relayBase } from './net.js?v=20260821-2';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260821-3';
+import { createWorld, step, applyInput, applySnapshot, interpolatedPose, markSpeculative, snapshot } from './sim.js?v=20260821-3';
+import { createBrain, driveBot } from './bots.js?v=20260821-3';
+import { createRenderer, paintAbilityIcon } from './render.js?v=20260821-3';
+import { createAudio } from './audio.js?v=20260821-3';
+import { createNet, fetchLobbies, relayBase } from './net.js?v=20260821-3';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -834,17 +834,19 @@ function connect(action, room, password, settings) {
   G.mode = 'online';
   G.room = clean;
   G.pendingAction = action;
-  G.net = createNet({
+  G.net?.close();
+  const net = createNet({
     onMessage: handleServer,
     onClose: reason => {
-      if (G.mode !== 'online') return;
+      if (G.mode !== 'online' || G.net !== net) return;
       G.mode = 'menu';
       G.world = null;
       show('online');
       $('online-error').textContent = reason || 'Disconnected from the relay.';
     },
   });
-  G.net.open(action, clean, { name: G.name, password, settings });
+  G.net = net;
+  net.open(action, clean, { name: G.name, password, settings });
 }
 
 function handleServer(message) {
@@ -922,7 +924,14 @@ function handleServer(message) {
     case 'snap': {
       if (!G.world) return;
       applySnapshot(G.world, message, G.you, !message.full);
-      G.snapshotClock = { serverTime: message.t, receivedAt: performance.now() };
+      const receivedAt = performance.now();
+      const packetTime = message.k * TUNE.step;
+      const renderTime = interpolationTime(receivedAt);
+      G.snapshotClock = {
+        serverTime: packetTime,
+        receivedAt,
+        renderTime: Number.isFinite(renderTime) ? renderTime : packetTime - 0.1,
+      };
       const localAlive = G.world.players.some(player => player.pid === G.you && player.alive);
       if (G.authoritativeAlive && !localAlive) {
         const player = G.world.players.find(candidate => candidate.pid === G.you);
@@ -1047,11 +1056,15 @@ function interpolationTime(now) {
   if (!G.snapshotClock) return NaN;
   // Remote entities render briefly behind authority so two real snapshots are
   // available to interpolate instead of extrapolating every network wobble.
-  return G.snapshotClock.serverTime + Math.max(0, now - G.snapshotClock.receivedAt) / 1000 - 0.1;
+  const target = G.snapshotClock.serverTime + Math.max(0, now - G.snapshotClock.receivedAt) / 1000 - 0.1;
+  G.snapshotClock.renderTime = Math.max(G.snapshotClock.renderTime ?? target, target);
+  return G.snapshotClock.renderTime;
 }
 
 function fixedStepPose(body, alpha) {
-  if (!Number.isFinite(body.previousX) || Math.hypot(body.x - body.previousX, body.y - body.previousY) > 2.5) return body;
+  const maxFixedStepMotion = TUNE.maxSpeed * TUNE.step * 2;
+  if (!Number.isFinite(body.previousX)
+    || Math.hypot(body.x - body.previousX, body.y - body.previousY) > maxFixedStepMotion) return body;
   let angle = body.ang - body.previousAng;
   while (angle > Math.PI) angle -= Math.PI * 2;
   while (angle < -Math.PI) angle += Math.PI * 2;
@@ -1253,7 +1266,7 @@ function frame(now) {
       G.net.pump(dt, readLocalInput(G.locals[0], localPlayer()) , 1 / TUNE.inputHz);
     }
 
-    accumulator += dt;
+    accumulator = Math.min(accumulator + dt, TUNE.step * 5);
     let steps = 0;
     while (accumulator >= TUNE.step && steps < 5) {
       if (G.mode === 'offline' && !G.offline?.calm) {
