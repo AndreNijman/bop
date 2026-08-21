@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import { TUNE, ABILITIES, MAPS, resolveLoadout, sizeScale } from '../data.js';
-import { createWorld, step, applyInput, snapshot, applySnapshot, addBody, bodyById, markSpeculative, kill } from '../sim.js';
+import { createWorld, step, applyInput, snapshot, applySnapshot, interpolatedPose, addBody, bodyById, markSpeculative, kill } from '../sim.js';
 import { createBrain, driveBot } from '../bots.js';
 
 let passed = 0;
@@ -750,6 +750,33 @@ check('bots survive a full match on every map without NaN', () => {
     });
     assert.ok(w.tick > 0);
   }
+});
+
+check('snapshot poses interpolate remote motion and preserve teleports', () => {
+  const setup = { seed: 998, mapIndex: 0, players: [
+    { pid: 1, name: 'local', color: 0, abilities: [] },
+    { pid: 2, name: 'remote', color: 1, abilities: [] },
+  ] };
+  const server = createWorld(setup);
+  const client = createWorld(setup);
+  const sent = new Set();
+  server.t = 1;
+  server.players[1].vx = 10;
+  applySnapshot(client, snapshot(server, sent), 1, false);
+  const start = server.players[1].x;
+  server.players[1].x += 1;
+  server.players[1].vx = 10;
+  server.t = 1.1;
+  applySnapshot(client, snapshot(server, sent), 1, true);
+  const remote = client.players.find(player => player.pid === 2);
+  const halfway = interpolatedPose(remote, 1.05);
+  assert.ok(Math.abs(halfway.x - (start + 0.5)) < 0.01, `remote midpoint was ${halfway.x}`);
+
+  server.players[1].x += 4;
+  server.t = 1.2;
+  applySnapshot(client, snapshot(server, sent), 1, true);
+  const beforeTeleport = interpolatedPose(remote, 1.15);
+  assert.ok(Math.abs(beforeTeleport.x - (start + 1)) < 0.01, 'teleport was rendered as a sweep across the arena');
 });
 
 check('snapshots reproduce the authoritative world', () => {

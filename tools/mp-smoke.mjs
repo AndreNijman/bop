@@ -16,6 +16,7 @@ const liveRelay = process.env.LIVE_RELAY;
 const relay = liveRelay || 'http://127.0.0.1:8787';
 const baseUrl = process.env.BASE_URL || 'http://127.0.0.1:4173';
 const CLIENTS = Math.min(TUNE.maxPlayers, Number(process.env.CLIENTS || TUNE.maxPlayers));
+const NETWORK_LATENCY_MS = Math.max(0, Number(process.env.NETWORK_LATENCY_MS || 0));
 
 const processes = [];
 if (!process.env.BASE_URL) processes.push(spawn('npx', ['serve', '.', '-l', '4173'], { stdio: 'ignore' }));
@@ -45,6 +46,17 @@ try {
   const pages = [];
   for (let i = 0; i < CLIENTS; i++) {
     const page = await context.newPage();
+    if (NETWORK_LATENCY_MS) {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('Network.enable');
+      await cdp.send('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: NETWORK_LATENCY_MS,
+        downloadThroughput: 10 * 1024 * 1024,
+        uploadThroughput: 10 * 1024 * 1024,
+        connectionType: 'wifi',
+      });
+    }
     page.on('pageerror', e => problems.push(`p${i} page error: ${e.message}`));
     page.on('console', m => { if (m.type() === 'error') problems.push(`p${i} console: ${m.text()}`); });
     page.on('requestfailed', request => problems.push(`p${i} request failed: ${request.url()} (${request.failure()?.errorText || 'unknown'})`));
@@ -193,13 +205,75 @@ try {
     const player = window.BOP.state().players.find(candidate => candidate.pid === playerId && candidate.alive);
     return player ? { x: player.x, y: player.y } : null;
   }, pid);
+  const startMotionTrace = (page, pid) => page.evaluate(playerId => {
+    const trace = { active: true, samples: [] };
+    window.__bopMotionTrace = trace;
+    const sample = time => {
+      if (!trace.active) return;
+      const player = window.BOP.state().players.find(candidate => candidate.pid === playerId && candidate.alive);
+      if (player) trace.samples.push({ time, x: player.x, y: player.y });
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }, pid);
+  const stopMotionTrace = page => page.evaluate(() => {
+    const trace = window.__bopMotionTrace;
+    if (!trace) return [];
+    trace.active = false;
+    return trace.samples;
+  });
+  const motionStats = samples => {
+    const steps = [];
+    const velocities = [];
+    for (let i = 1; i < samples.length; i++) {
+      const dt = (samples[i].time - samples[i - 1].time) / 1000;
+      if (dt <= 0) continue;
+      const dx = samples[i].x - samples[i - 1].x;
+      const dy = samples[i].y - samples[i - 1].y;
+      steps.push(Math.hypot(dx, dy));
+      velocities.push({ x: dx / dt, y: dy / dt });
+    }
+    const velocityJumps = [];
+    for (let i = 1; i < velocities.length; i++) {
+      velocityJumps.push(Math.hypot(velocities[i].x - velocities[i - 1].x, velocities[i].y - velocities[i - 1].y));
+    }
+    const sorted = values => [...values].sort((a, b) => a - b);
+    const percentile = (values, fraction) => {
+      if (!values.length) return 0;
+      const ordered = sorted(values);
+      return ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * fraction))];
+    };
+    return {
+      frames: samples.length,
+      maxStep: Math.max(0, ...steps),
+      p95Step: percentile(steps, 0.95),
+      maxVelocityJump: Math.max(0, ...velocityJumps),
+      p95VelocityJump: percentile(velocityJumps, 0.95),
+    };
+  };
   const distance = (a, b) => a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
   const hostPid = states[0].you;
   const hostRemoteStart = await position(guests[0], hostPid);
+  await startMotionTrace(guests[0], hostPid);
+  await startMotionTrace(host, hostPid);
   await host.keyboard.down('KeyD');
   await host.waitForTimeout(1100);
   await host.keyboard.up('KeyD');
   await host.waitForTimeout(500);
+  const hostMotion = motionStats(await stopMotionTrace(guests[0]));
+  const hostLocalMotion = motionStats(await stopMotionTrace(host));
+  if (process.env.TRACE_MOTION) {
+    console.log('  local host motion ', hostLocalMotion);
+    console.log('  remote host motion', hostMotion);
+  }
+  if (hostLocalMotion.frames < 50) problems.push(`local motion trace captured only ${hostLocalMotion.frames} frames`);
+  if (hostLocalMotion.maxVelocityJump > 10 || hostLocalMotion.p95VelocityJump > 5) {
+    problems.push(`local movement jittered (velocity jump max ${hostLocalMotion.maxVelocityJump.toFixed(1)}, p95 ${hostLocalMotion.p95VelocityJump.toFixed(1)})`);
+  }
+  if (hostMotion.frames < 50) problems.push(`remote motion trace captured only ${hostMotion.frames} frames`);
+  if (hostMotion.maxVelocityJump > 10 || hostMotion.p95VelocityJump > 5) {
+    problems.push(`remote movement jittered (velocity jump max ${hostMotion.maxVelocityJump.toFixed(1)}, p95 ${hostMotion.p95VelocityJump.toFixed(1)})`);
+  }
   const hostLocalEnd = await position(host, hostPid);
   const hostRemoteEnd = await position(guests[0], hostPid);
   if (distance(hostRemoteStart, hostRemoteEnd) < 0.3) problems.push('host movement did not reach the guest snapshot');

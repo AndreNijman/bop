@@ -5,12 +5,12 @@
 // live in sim.js, all the numbers live in data.js, so this file never decides
 // anything about the game itself.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260821-1';
-import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260821-1';
-import { createBrain, driveBot } from './bots.js?v=20260821-1';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20260821-1';
-import { createAudio } from './audio.js?v=20260821-1';
-import { createNet, fetchLobbies, relayBase } from './net.js?v=20260821-1';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260821-2';
+import { createWorld, step, applyInput, applySnapshot, interpolatedPose, markSpeculative, snapshot } from './sim.js?v=20260821-2';
+import { createBrain, driveBot } from './bots.js?v=20260821-2';
+import { createRenderer, paintAbilityIcon } from './render.js?v=20260821-2';
+import { createAudio } from './audio.js?v=20260821-2';
+import { createNet, fetchLobbies, relayBase } from './net.js?v=20260821-2';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -47,6 +47,8 @@ const G = {
   stats: { matches: 0, rounds: 0, wins: 0, kills: 0, deaths: 0 },
   cloud: false,
   name: 'bopl',
+  snapshotClock: null,
+  renderAlpha: 1,
 };
 
 // ---------------------------------------------------------------------------
@@ -920,6 +922,7 @@ function handleServer(message) {
     case 'snap': {
       if (!G.world) return;
       applySnapshot(G.world, message, G.you, !message.full);
+      G.snapshotClock = { serverTime: message.t, receivedAt: performance.now() };
       const localAlive = G.world.players.some(player => player.pid === G.you && player.alive);
       if (G.authoritativeAlive && !localAlive) {
         const player = G.world.players.find(candidate => candidate.pid === G.you);
@@ -1018,6 +1021,12 @@ $('chat-form').addEventListener('submit', event => {
 function buildWorld(setup, speculative = false) {
   G.world = createWorld(setup);
   accumulator = 0;
+  G.snapshotClock = null;
+  for (const body of G.world.bodies) {
+    body.previousX = body.x;
+    body.previousY = body.y;
+    body.previousAng = body.ang;
+  }
   if (speculative) markSpeculative(G.world);
   G.wasAlive.clear();
   for (const player of G.world.players) G.wasAlive.set(player.id, true);
@@ -1032,6 +1041,32 @@ function openEliminatedSelect(player) {
   G.draft = { rows: [{ pid: player.pid, held, picked: false, slot: 0 }], midRound: true, left: 0, deadline: Infinity };
   renderDraft();
   show('draft');
+}
+
+function interpolationTime(now) {
+  if (!G.snapshotClock) return NaN;
+  // Remote entities render briefly behind authority so two real snapshots are
+  // available to interpolate instead of extrapolating every network wobble.
+  return G.snapshotClock.serverTime + Math.max(0, now - G.snapshotClock.receivedAt) / 1000 - 0.1;
+}
+
+function fixedStepPose(body, alpha) {
+  if (!Number.isFinite(body.previousX) || Math.hypot(body.x - body.previousX, body.y - body.previousY) > 2.5) return body;
+  let angle = body.ang - body.previousAng;
+  while (angle > Math.PI) angle -= Math.PI * 2;
+  while (angle < -Math.PI) angle += Math.PI * 2;
+  return {
+    x: body.previousX + (body.x - body.previousX) * alpha,
+    y: body.previousY + (body.y - body.previousY) * alpha,
+    ang: body.previousAng + angle * alpha,
+  };
+}
+
+function renderPose(body, now, poseTime = interpolationTime(now), alpha = G.renderAlpha) {
+  const locallyPredicted = body.pid === G.you || body.owner === G.you;
+  return G.mode === 'online' && !locallyPredicted
+    ? interpolatedPose(body, poseTime)
+    : fixedStepPose(body, alpha);
 }
 
 function buildSlots() {
@@ -1236,6 +1271,11 @@ function frame(now) {
           shared.set(player.pid, { ...player.input, ab: [...player.input.ab] });
         }
       }
+      for (const body of world.bodies) {
+        body.previousX = body.x;
+        body.previousY = body.y;
+        body.previousAng = body.ang;
+      }
       const events = step(world, TUNE.step);
       renderer.feed(events, world);
       audio.feed(events);
@@ -1268,14 +1308,21 @@ function frame(now) {
   }
 
   renderer.stepParticles(dt);
+  G.renderAlpha = clamp(accumulator / TUNE.step, 0, 1);
   if (G.screen === 'play' && world) {
+    const poseTime = interpolationTime(now);
     renderer.draw(world, {
       localPid: G.you, time: now / 1000, showNames: true,
       colorOf: pid => G.roster.find(r => r.pid === pid)?.color ?? 0,
+      poseOf: body => renderPose(body, now, poseTime, G.renderAlpha),
     });
     updateHud();
   } else if (world && G.screen === 'draft') {
-    renderer.draw(world, { localPid: G.you, time: now / 1000, showNames: false, colorOf: () => 0 });
+    const poseTime = interpolationTime(now);
+    renderer.draw(world, {
+      localPid: G.you, time: now / 1000, showNames: false, colorOf: () => 0,
+      poseOf: body => renderPose(body, now, poseTime, G.renderAlpha),
+    });
   }
 }
 
@@ -1368,7 +1415,10 @@ window.BOP = {
     screen: G.screen, mode: G.mode, round: G.round, you: G.you,
     phase: G.world?.phase, tick: G.world?.tick, bodies: G.world?.bodies.length,
     alive: G.world?.players.filter(p => p.alive).length,
-    players: G.world?.players.map(p => ({ id: p.id, pid: p.pid, x: p.x, y: p.y, alive: p.alive })) || [],
+    players: G.world?.players.map(p => {
+      const pose = renderPose(p, performance.now());
+      return { id: p.id, pid: p.pid, x: pose.x, y: pose.y, alive: p.alive };
+    }) || [],
     roster: G.roster.map(r => ({ pid: r.pid, name: r.name, color: r.color, team: r.team, wins: r.wins, abilities: r.abilities })),
   }),
   relay: relayBase,

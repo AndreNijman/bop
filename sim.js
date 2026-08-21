@@ -224,6 +224,10 @@ function cloneBopl(w, source, x, y, keepAbilities) {
     clone: true,
   };
   delete spec.id;
+  delete spec.snapshotPoses;
+  delete spec.previousX;
+  delete spec.previousY;
+  delete spec.previousAng;
   const clone = addBody(w, spec);
   refreshSize(clone);
   w.players.push(clone);
@@ -2030,6 +2034,9 @@ const LOCAL_ID_BASE = 1000000;
 
 const r2 = v => Math.round(v * 100) / 100;
 const r3 = v => Math.round(v * 1000) / 1000;
+// Six 15 Hz samples cover the short render delay plus ordinary packet jitter.
+const MAX_INTERPOLATION_SAMPLES = 6;
+const MAX_INTERPOLATION_STEP = 2.5;
 
 export function markSpeculative(w) { w.nextId = LOCAL_ID_BASE; }
 
@@ -2106,6 +2113,56 @@ function applyBodyDynamic(b, d) {
   setMass(b, b.density);
 }
 
+function recordSnapshotPose(b, time, reset) {
+  const history = reset ? [] : (b.snapshotPoses || []);
+  const previous = history[history.length - 1];
+  const discontinuity = !!previous && (
+    len(b.x - previous.x, b.y - previous.y) > MAX_INTERPOLATION_STEP
+    || previous.alive !== b.alive || previous.hidden !== b.hidden
+  );
+  history.push({
+    time, x: b.x, y: b.y, vx: b.vx, vy: b.vy, ang: b.ang,
+    alive: b.alive, hidden: b.hidden, discontinuity,
+  });
+  if (history.length > MAX_INTERPOLATION_SAMPLES) history.splice(0, history.length - MAX_INTERPOLATION_SAMPLES);
+  b.snapshotPoses = history;
+}
+
+export function interpolatedPose(b, time) {
+  const history = b.snapshotPoses;
+  if (!history?.length || !Number.isFinite(time)) return { x: b.x, y: b.y, ang: b.ang };
+  if (time <= history[0].time) return history[0];
+  const last = history[history.length - 1];
+  if (time >= last.time) {
+    if (last.discontinuity) return last;
+    const ahead = Math.min(0.1, time - last.time);
+    return { x: last.x + last.vx * ahead, y: last.y + last.vy * ahead, ang: last.ang };
+  }
+  for (let i = 1; i < history.length; i++) {
+    const next = history[i];
+    if (time > next.time) continue;
+    const previous = history[i - 1];
+    if (next.discontinuity) return previous;
+    const span = next.time - previous.time;
+    const amount = span > 0 ? clamp((time - previous.time) / span, 0, 1) : 1;
+    const amount2 = amount * amount;
+    const amount3 = amount2 * amount;
+    const h00 = 2 * amount3 - 3 * amount2 + 1;
+    const h10 = amount3 - 2 * amount2 + amount;
+    const h01 = -2 * amount3 + 3 * amount2;
+    const h11 = amount3 - amount2;
+    let angle = next.ang - previous.ang;
+    while (angle > Math.PI) angle -= TAU;
+    while (angle < -Math.PI) angle += TAU;
+    return {
+      x: h00 * previous.x + h10 * span * previous.vx + h01 * next.x + h11 * span * next.vx,
+      y: h00 * previous.y + h10 * span * previous.vy + h01 * next.y + h11 * span * next.vy,
+      ang: previous.ang + angle * amount,
+    };
+  }
+  return last;
+}
+
 export function snapshot(w, sent) {
   const spawns = [];
   const players = [];
@@ -2147,7 +2204,10 @@ export function applySnapshot(w, snap, localPid, blend) {
   for (const d of snap.b || []) {
     known.add(d[0]);
     const b = bodyById(w, d[0]);
-    if (b) applyBodyDynamic(b, d);
+    if (b) {
+      applyBodyDynamic(b, d);
+      recordSnapshotPose(b, snap.t, !blend);
+    }
   }
   for (const d of snap.p || []) known.add(d[0]);
   // Anything the client speculated locally is dropped: the relay is the truth.
@@ -2166,11 +2226,16 @@ export function applySnapshot(w, snap, localPid, blend) {
     if (blend && isLocal && p.alive && d[8]) {
       const ex = d[1] - p.x, ey = d[2] - p.y;
       const err = len(ex, ey);
-      const k = err > 1.5 ? 1 : 0.22;
+      const k = err > 2.5 ? 1 : 0.06;
       const keepX = p.x + ex * k, keepY = p.y + ey * k;
+      const keepVx = p.vx, keepVy = p.vy;
       applyBoplDynamic(p, d, true);
       p.x = keepX; p.y = keepY;
+      const velocityK = err > 2.5 ? 1 : 0.15;
+      p.vx = keepVx + (p.vx - keepVx) * velocityK;
+      p.vy = keepVy + (p.vy - keepVy) * velocityK;
     } else applyBoplDynamic(p, d, isLocal);
+    recordSnapshotPose(p, snap.t, !blend);
   }
   w.nextId = Math.max(w.nextId, LOCAL_ID_BASE);
 }

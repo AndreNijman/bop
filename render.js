@@ -649,7 +649,7 @@ export function createRenderer(canvas) {
     }
   }
 
-  function draw(world, view) {
+  function drawFrame(world, view) {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
@@ -815,6 +815,29 @@ export function createRenderer(canvas) {
       ctx.fillStyle = flashColor;
       ctx.fillRect(0, 0, w, h);
       ctx.globalAlpha = 1;
+    }
+  }
+
+  function draw(world, view) {
+    const adjusted = [];
+    if (world) {
+      for (const body of world.bodies) {
+        const pose = view.poseOf?.(body);
+        if (!pose) continue;
+        adjusted.push(body, body.x, body.y, body.ang);
+        body.x = pose.x;
+        body.y = pose.y;
+        body.ang = pose.ang;
+      }
+    }
+    try {
+      drawFrame(world, view);
+    } finally {
+      for (let i = 0; i < adjusted.length; i += 4) {
+        adjusted[i].x = adjusted[i + 1];
+        adjusted[i].y = adjusted[i + 2];
+        adjusted[i].ang = adjusted[i + 3];
+      }
     }
   }
 
