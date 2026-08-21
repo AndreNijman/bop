@@ -17,6 +17,8 @@ import { createBrain, driveBot } from './bots.js';
 const TICK_MS = 1000 / 60;
 const SNAPSHOT_EVERY = 4;                 // 15 Hz
 const ROOM_TTL = 45 * 60_000;
+const REGISTRY_HEARTBEAT = 10_000;
+const REGISTRY_STALE = 30_000;
 const HANDSHAKE_MS = 12_000;
 const MAX_MESSAGE = 4096;
 const PRODUCTION_ORIGIN = 'https://bop.andrenijman.com';
@@ -97,8 +99,9 @@ export class LobbyRegistry {
       const now = Date.now();
       const lobbies = [];
       for (const [key, value] of entries) {
-        if (!value.updated || now - value.updated > 90_000) { await this.ctx.storage.delete(key); continue; }
-        lobbies.push({ ...value, joinable: value.phase === 'lobby' && value.players < value.max });
+        if (!value.updated || now - value.updated > REGISTRY_STALE) { await this.ctx.storage.delete(key); continue; }
+        if (value.phase !== 'lobby' || value.players < 1) continue;
+        lobbies.push({ ...value, joinable: value.players < value.max });
       }
       lobbies.sort((a, b) => (b.joinable - a.joinable) || (b.players - a.players) || (b.updated - a.updated));
       return json({ lobbies: lobbies.slice(0, 40) });
@@ -137,6 +140,8 @@ export class GameRoom {
     this.lastTick = 0;
     this.tickCount = 0;
     this.touched = Date.now();
+    this.lastRegistrySync = 0;
+    this.registryQueue = Promise.resolve();
     this.seed = (Date.now() ^ 0x5f3759df) | 0;
     this.rand = rng(this.seed);
     this.mapHistory = [];
@@ -422,8 +427,19 @@ export class GameRoom {
     });
   }
 
-  async syncRegistry() {
-    if (!this.key) return;
+  registryRequest(path, body) {
+    const request = new Request(`https://registry/${path}`, {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    this.registryQueue = this.registryQueue
+      .then(() => this.env.REGISTRY.getByName('global').fetch(request))
+      .catch(error => { console.error('registry sync failed', error); });
+    this.ctx.waitUntil(this.registryQueue);
+    return this.registryQueue;
+  }
+
+  syncRegistry() {
+    if (!this.key) return Promise.resolve();
     const humans = [...this.roster.values()].filter(r => !r.bot).length;
     const colors = [...this.roster.values()].filter(record => !record.bot).map(record => record.color);
     const lobby = {
@@ -431,16 +447,14 @@ export class GameRoom {
       max: this.settings.max, locked: !!this.password, phase: this.phase,
       round: this.round, wins: this.settings.wins, updated: Date.now(),
     };
-    await this.env.REGISTRY.getByName('global').fetch(new Request('https://registry/upsert', {
-      method: 'POST', body: JSON.stringify({ key: this.key, lobby }),
-    }));
+    this.lastRegistrySync = lobby.updated;
+    return this.registryRequest('upsert', { key: this.key, lobby });
   }
 
-  async removeRegistry() {
-    if (!this.key) return;
-    await this.env.REGISTRY.getByName('global').fetch(new Request('https://registry/remove', {
-      method: 'POST', body: JSON.stringify({ key: this.key }),
-    })).catch(() => {});
+  removeRegistry() {
+    if (!this.key) return Promise.resolve();
+    this.lastRegistrySync = 0;
+    return this.registryRequest('remove', { key: this.key });
   }
 
   // -- match flow ----------------------------------------------------------
@@ -621,6 +635,7 @@ export class GameRoom {
       return;
     }
     if (!this.sessions.size) { this.reset(); return; }
+    if (this.key && now - this.lastRegistrySync >= REGISTRY_HEARTBEAT) this.syncRegistry();
 
     if (this.phase === 'draft') {
       if (now >= this.deadline) {

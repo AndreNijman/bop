@@ -110,6 +110,16 @@ try {
   if (!entry) problems.push('lobby never appeared in the public directory');
   else if (!entry.locked) problems.push('password protected lobby was not marked locked');
 
+  // Idle but connected lobbies need a heartbeat so the registry can use a
+  // short stale-entry fallback without removing real rooms.
+  await host.waitForTimeout(10_500);
+  const afterHeartbeat = await host.evaluate(async relayBase => {
+    const response = await fetch(`${relayBase}/lobbies`, { cache: 'no-store' });
+    return (await response.json()).lobbies || [];
+  }, relay);
+  const heartbeated = afterHeartbeat.find(lobby => lobby.name === room);
+  if (!heartbeated || heartbeated.updated <= (entry?.updated || 0)) problems.push('idle lobby registry heartbeat did not advance');
+
   // Everyone else joins with the right password.
   for (let i = 0; i < guests.length; i++) {
     const page = guests[i];
@@ -196,7 +206,7 @@ try {
     const response = await fetch(`${relayBase}/lobbies`, { cache: 'no-store' });
     return (await response.json()).lobbies || [];
   }, relay);
-  if (startedList.find(lobby => lobby.name === room)?.joinable) problems.push('started match remained joinable in the lobby directory');
+  if (startedList.some(lobby => lobby.name === room)) problems.push('started match remained in the lobby directory');
 
   // Movement made on one client must be visible to the others. Checking only
   // the mover's local prediction allowed a missing snapshot discriminator to
@@ -343,6 +353,18 @@ try {
   } else if (leaking) {
     console.log('  note: the dev server serves dotfiles; GitHub Pages 404s them, checked separately in production');
   }
+
+  // The last disconnect must delete the registry entry immediately. Expiry is
+  // only a fallback for infrastructure failures, not normal lobby cleanup.
+  await host.close();
+  let stale = true;
+  for (let i = 0; i < 30; i++) {
+    const listed = await fetch(`${relay}/lobbies`, { cache: 'no-store' }).then(response => response.json());
+    stale = (listed.lobbies || []).some(lobby => lobby.name === room);
+    if (!stale) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (stale) problems.push('empty lobby remained in the public directory after its last player disconnected');
 
   if (problems.length) {
     console.error('multiplayer smoke test failed:');
