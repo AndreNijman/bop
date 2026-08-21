@@ -5,12 +5,12 @@
 // live in sim.js, all the numbers live in data.js, so this file never decides
 // anything about the game itself.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260820-6';
-import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260820-6';
-import { createBrain, driveBot } from './bots.js?v=20260820-6';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20260820-6';
-import { createAudio } from './audio.js?v=20260820-6';
-import { createNet, fetchLobbies, relayBase } from './net.js?v=20260820-6';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20260821-1';
+import { createWorld, step, applyInput, applySnapshot, markSpeculative, snapshot } from './sim.js?v=20260821-1';
+import { createBrain, driveBot } from './bots.js?v=20260821-1';
+import { createRenderer, paintAbilityIcon } from './render.js?v=20260821-1';
+import { createAudio } from './audio.js?v=20260821-1';
+import { createNet, fetchLobbies, relayBase } from './net.js?v=20260821-1';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -846,7 +846,7 @@ function connect(action, room, password, settings) {
 }
 
 function handleServer(message) {
-  switch (message.t) {
+  switch (message.type || message.t) {
     case 'welcome': {
       G.you = message.you;
       G.host = !!message.host;
@@ -1368,6 +1368,7 @@ window.BOP = {
     screen: G.screen, mode: G.mode, round: G.round, you: G.you,
     phase: G.world?.phase, tick: G.world?.tick, bodies: G.world?.bodies.length,
     alive: G.world?.players.filter(p => p.alive).length,
+    players: G.world?.players.map(p => ({ id: p.id, pid: p.pid, x: p.x, y: p.y, alive: p.alive })) || [],
     roster: G.roster.map(r => ({ pid: r.pid, name: r.name, color: r.color, team: r.team, wins: r.wins, abilities: r.abilities })),
   }),
   relay: relayBase,

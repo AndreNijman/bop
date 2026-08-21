@@ -186,16 +186,37 @@ try {
   }, relay);
   if (startedList.find(lobby => lobby.name === room)?.joinable) problems.push('started match remained joinable in the lobby directory');
 
-  // Movement made on one client must be visible to the others: this is the real
-  // test of the snapshot pipeline.
-  const startX = await host.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer).x);
+  // Movement made on one client must be visible to the others. Checking only
+  // the mover's local prediction allowed a missing snapshot discriminator to
+  // leave every remote player frozen without failing this test.
+  const position = (page, pid) => page.evaluate(playerId => {
+    const player = window.BOP.state().players.find(candidate => candidate.pid === playerId && candidate.alive);
+    return player ? { x: player.x, y: player.y } : null;
+  }, pid);
+  const distance = (a, b) => a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+  const hostPid = states[0].you;
+  const hostRemoteStart = await position(guests[0], hostPid);
   await host.keyboard.down('KeyD');
   await host.waitForTimeout(1100);
   await host.keyboard.up('KeyD');
   await host.waitForTimeout(500);
-  const hostX = await host.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer).x);
-  if (!(hostX > startX + 0.3)) problems.push(`host did not move online (${startX} -> ${hostX})`);
-  const guestAlive = await guests[1].evaluate(() => window.BOP.state().alive);
+  const hostLocalEnd = await position(host, hostPid);
+  const hostRemoteEnd = await position(guests[0], hostPid);
+  if (distance(hostRemoteStart, hostRemoteEnd) < 0.3) problems.push('host movement did not reach the guest snapshot');
+  if (distance(hostLocalEnd, hostRemoteEnd) > 1.5) problems.push('host and guest disagree on the host position');
+
+  const guestPid = states[1].you;
+  const guestRemoteStart = await position(host, guestPid);
+  await guests[0].keyboard.down('KeyD');
+  await guests[0].waitForTimeout(1100);
+  await guests[0].keyboard.up('KeyD');
+  await guests[0].waitForTimeout(500);
+  const guestLocalEnd = await position(guests[0], guestPid);
+  const guestRemoteEnd = await position(host, guestPid);
+  if (distance(guestRemoteStart, guestRemoteEnd) < 0.3) problems.push('guest movement did not reach the host snapshot');
+  if (distance(guestLocalEnd, guestRemoteEnd) > 1.5) problems.push('guest and host disagree on the guest position');
+
+  const guestAlive = await guests[0].evaluate(() => window.BOP.state().alive);
   if (guestAlive !== alive[0]) problems.push('guest and host disagree on the survivor count after movement');
 
   // Latency should be reported, which proves the ping round trip works.
@@ -227,7 +248,8 @@ try {
   await guests[guests.length - 1].close();
   await host.waitForTimeout(1200);
   const survived = await host.evaluate(() => window.BOP.state());
-  if (survived.screen !== 'play') problems.push('the round ended when one client left');
+  if (CLIENTS > 2 && survived.screen !== 'play') problems.push('the round ended while multiple clients remained');
+  if (CLIENTS === 2 && survived.screen !== 'lobby') problems.push('the final online player was not returned to the lobby');
 
   await host.screenshot({ path: '/tmp/opencode/bop-mp-smoke.png' });
 

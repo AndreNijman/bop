@@ -2120,6 +2120,7 @@ export function snapshot(w, sent) {
     bodies.push(bodyDynamic(b));
   }
   return {
+    type: 'snap',
     k: w.tick, t: r2(w.t), ph: w.phase, pt: r2(w.phaseT), sd: r2(w.sudden),
     bx: r2(w.bounds.x), by: r2(w.bounds.y), wt: w.water == null ? null : r2(w.water),
     wr: w.winner, fz: w.freeze ? w.freeze.owner : -1, fzt: w.freeze ? r2(w.freeze.t) : 0,

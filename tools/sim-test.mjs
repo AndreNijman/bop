@@ -761,6 +761,10 @@ check('snapshots reproduce the authoritative world', () => {
   const client = createWorld(setup);
   markSpeculative(client);
   const sent = new Set();
+  const firstPacket = snapshot(server, sent);
+  assert.equal(firstPacket.type, 'snap', 'snapshot packet has no protocol discriminator');
+  assert.equal(typeof firstPacket.t, 'number', 'snapshot simulation time is not numeric');
+  sent.clear();
   const brains = server.players.map((p, i) => createBrain(i + 5));
   for (let i = 0; i < 600; i++) {
     server.players.forEach((p, index) => driveBot(server, p, brains[index], TUNE.step));

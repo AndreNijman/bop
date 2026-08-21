@@ -582,7 +582,7 @@ export class GameRoom {
 
   sendFull(session) {
     const fresh = new Set();
-    this.send(session.socket, { ...snapshot(this.world, fresh), full: true });
+    this.send(session.socket, { ...snapshot(this.world, fresh), type: 'full', full: true });
   }
 
   finishRound() {
