@@ -24,9 +24,12 @@ if (!liveRelay) processes.push(spawn('npx', ['wrangler', 'dev', '--port', '8787'
 const stop = () => processes.forEach(p => { try { p.kill('SIGTERM'); } catch {} });
 process.on('exit', stop);
 
-async function ready(url, label) {
+async function ready(url, label, protectedOrigin = false) {
   for (let i = 0; i < 160; i++) {
-    try { if ((await fetch(url)).ok) return; } catch {}
+    try {
+      const response = await fetch(url);
+      if (response.ok || (protectedOrigin && response.status < 500)) return;
+    } catch {}
     await new Promise(r => setTimeout(r, 300));
   }
   throw new Error(`${label} (${url}) never became ready`);
@@ -34,7 +37,7 @@ async function ready(url, label) {
 
 const problems = [];
 await ready(`${relay}/health`, 'relay');
-await ready(baseUrl, 'static server');
+await ready(baseUrl, 'static server', !!process.env.BASE_URL);
 
 const health = await (await fetch(`${relay}/health`)).json();
 if (health.abilities !== 29) problems.push(`relay reports ${health.abilities} abilities`);
@@ -62,7 +65,14 @@ try {
     page.on('requestfailed', request => problems.push(`p${i} request failed: ${request.url()} (${request.failure()?.errorText || 'unknown'})`));
     const gameUrl = `${baseUrl}/?_games_frame=1&relay=${encodeURIComponent(relay)}`;
     await page.goto(gameUrl);
-    if (await page.locator('.skip button').count()) {
+    const deviceName = page.locator('form[action^="/_guard/name"] input[name="name"]');
+    if (await deviceName.count()) {
+      const action = await deviceName.evaluate(input => input.form.action);
+      await context.request.post(action, {
+        form: { name: 'BOP multiplayer smoke' }, maxRedirects: 0,
+      });
+      await page.goto(gameUrl);
+    } else if (await page.locator('.skip button').count()) {
       await context.request.post('https://games.andrenijman.com/_guard/skip', {
         form: { name: 'BOP multiplayer smoke', return: `${baseUrl}/` }, maxRedirects: 0,
       });
