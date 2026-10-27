@@ -1,3 +1,5 @@
+// netping.js v1 (canonical copy: games-site shared/net/).
+//
 // Client half of the lag log: measures this player's round trip to the relay
 // and their frame rate, and reports both about once a second. The relay
 // answers each ping with a pong carrying the same `c`, and keeps the reports
