@@ -13,6 +13,7 @@
 import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js?v=20260821-3';
 import { createWorld, step, applyInput, snapshot } from './sim.js?v=20260821-3';
 import { createBrain, driveBot } from './bots.js?v=20260821-3';
+import { NetStats, sendNetLog, coloOf } from './netstats.js';
 
 const TICK_MS = 1000 / 60;
 const SNAPSHOT_EVERY = 4;                 // 15 Hz
@@ -145,6 +146,9 @@ export class GameRoom {
     this.seed = (Date.now() ^ 0x5f3759df) | 0;
     this.rand = rng(this.seed);
     this.mapHistory = [];
+    this.net = null;                  // lag stats for the match in progress
+    this.netLoopAt = 0;
+    this.colo = '';
   }
 
   // -- plumbing ------------------------------------------------------------
@@ -185,6 +189,7 @@ export class GameRoom {
   }
 
   reset() {
+    this.endNetLog('closed');
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     this.removeRegistry();
     this.roster.clear();
@@ -216,6 +221,7 @@ export class GameRoom {
 
     switch (message.t) {
       case 'input': {
+        this.net?.message(session.pid);
         const players = this.world?.players.filter(p => p.pid === session.pid) || [];
         if (players.length && this.phase === 'round') {
           const input = {
@@ -312,7 +318,10 @@ export class GameRoom {
         if (text) this.broadcast({ t: 'chat', name: record.name, m: text });
         return;
       }
-      case 'ping': this.send(session.socket, { t: 'pong', c: message.c }); return;
+      case 'ping':
+        this.net?.ping(session.pid, message.rtt, message.fps, message.frameMax);
+        this.send(session.socket, { t: 'pong', c: message.c });
+        return;
     }
   }
 
@@ -476,6 +485,7 @@ export class GameRoom {
   // -- match flow ----------------------------------------------------------
 
   returnToLobby() {
+    this.endNetLog(this.phase === 'done' ? 'finished' : 'abandoned');
     this.phase = 'lobby';
     this.world = null;
     this.round = 0;
@@ -503,7 +513,29 @@ export class GameRoom {
       delete record.pendingLoadout;
     }
     for (const record of this.roster.values()) { record.wins = 0; record.abilities = []; }
+    this.startNetLog();
     this.startDraft();
+  }
+
+  // -- lag log -------------------------------------------------------------
+
+  // One record per match, from the first draft to the match result (or until
+  // it is abandoned), sent to games-guard's NetLog.
+  startNetLog() {
+    this.endNetLog('abandoned');
+    this.net = new NetStats();
+    this.netLoopAt = 0;
+    for (const record of this.roster.values()) if (!record.bot) this.net.seat(record.pid, record.name);
+    if (!this.colo) coloOf().then(colo => { this.colo = colo; });
+  }
+
+  endNetLog(outcome) {
+    const net = this.net;
+    this.net = null;
+    if (!net) return;
+    const record = net.record({ code: this.room, mode: `${net.seats.size}p · first to ${this.settings.wins}`, outcome, colo: this.colo });
+    if (record.runTime < 10) return;
+    sendNetLog(this.env, this.ctx, 'bop', record);
   }
 
   startDraft() {
@@ -637,6 +669,7 @@ export class GameRoom {
       this.phase = 'done';
       this.world = null;
       this.broadcast({ t: 'match', winner: resultWinner, standings });
+      this.endNetLog('finished');
       this.syncRegistry();
       return;
     }
@@ -668,9 +701,10 @@ export class GameRoom {
       return;
     }
 
-    if (this.phase !== 'round' || !this.world) return;
+    if (this.phase !== 'round' || !this.world) { this.netLoopAt = 0; return; }
 
-    const elapsed = Math.min(250, now - this.lastTick);
+    const gap = now - this.lastTick;
+    const elapsed = Math.min(250, gap);
     this.lastTick = now;
     this.accumulator = Math.min(this.accumulator + elapsed / 1000, TUNE.step * 4);
     let steps = 0;
@@ -693,6 +727,11 @@ export class GameRoom {
       steps++;
       this.tickCount++;
       if (this.tickCount % SNAPSHOT_EVERY === 0) this.broadcast(snapshot(this.world, this.sent));
+    }
+    if (this.net) {
+      // Only gaps between two round ticks; the first tick of a round follows a draft.
+      if (this.netLoopAt) this.net.loop(gap, steps * TUNE.step * 1000, Math.max(0, gap - 250));
+      this.netLoopAt = now;
     }
     if (steps === 0) return;
 

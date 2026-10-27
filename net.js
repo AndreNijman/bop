@@ -6,6 +6,8 @@
 // rejoined halfway in any meaningful way, so a dropped socket returns you to
 // the lobby screen with the reason on it.
 
+import { NetPing } from './netping.js';
+
 const RELAY_FALLBACK = 'https://bop-relay.tung-tung-tung-sahur.workers.dev';
 
 export function relayBase() {
@@ -27,7 +29,8 @@ export function lobbyListUrl() {
 export function createNet(handlers) {
   let socket = null;
   let sendTimer = 0;
-  let pingAt = 0;
+  let pinger = null;
+  let pingTimer = 0;
   let latency = 0;
   let closedReason = '';
 
@@ -37,6 +40,8 @@ export function createNet(handlers) {
     const url = new URL(`${base}/ws`);
     url.searchParams.set('room', room);
     socket = new WebSocket(url.toString());
+    pinger = new NetPing();
+    pingTimer = 0;
     const guard = setTimeout(() => { if (socket && socket.readyState !== 1) socket.close(); }, 12000);
     socket.onopen = () => {
       clearTimeout(guard);
@@ -50,12 +55,14 @@ export function createNet(handlers) {
     socket.onmessage = event => {
       let message;
       try { message = JSON.parse(event.data); } catch { return; }
-      if (message.t === 'pong') { latency = Math.round(performance.now() - pingAt); return; }
+      if (message.t === 'pong') { const rtt = pinger?.pong(message.c) ?? -1; if (rtt >= 0) latency = rtt; return; }
       handlers.onMessage?.(message);
     };
     socket.onclose = event => {
       clearTimeout(guard);
       socket = null;
+      pinger?.stop();
+      pinger = null;
       handlers.onClose?.(closedReason || event.reason || '');
       closedReason = '';
     };
@@ -70,18 +77,25 @@ export function createNet(handlers) {
     if (!socket) return;
     const old = socket;
     socket = null;
+    pinger?.stop();
+    pinger = null;
     old.onclose = null;
     old.close();
   }
 
-  // Called every animation frame; throttles to TUNE.inputHz internally.
+  // Called every animation frame; throttles to TUNE.inputHz internally. A
+  // ping goes once a second with this client's ping and frame rate, for the
+  // relay's lag log.
   function pump(dt, input, interval) {
+    pingTimer -= dt;
+    if (pingTimer <= 0 && pinger) {
+      pingTimer = 1;
+      send({ t: 'ping', ...pinger.next() });
+    }
     sendTimer -= dt;
     if (sendTimer > 0) return;
     sendTimer = interval;
     send({ t: 'input', mx: input.mx, my: input.my, jump: input.jump, ax: input.ax, ay: input.ay, ab: input.ab });
-    pingAt = performance.now();
-    send({ t: 'ping', c: 1 });
   }
 
   return {

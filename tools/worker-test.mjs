@@ -191,3 +191,58 @@ test('relay simulation debt is bounded to its catch-up budget', () => {
 
   assert.ok(room.accumulator <= TUNE.step);
 });
+
+test('a finished match sends its lag log to games-guard', async () => {
+  const logs = [];
+  const room = makeRoom();
+  room.env.NETLOG = { record: async (game, log) => { logs.push({ game, log }); return { ok: true }; } };
+  room.colo = 'PER';
+  room.room = 'Gas Giants';
+  room.settings.wins = 1;
+  room.roster.set(1, player(1, 0));
+  room.roster.set(2, player(2, 1));
+  room.beginMatch();
+  room.net.startedAt -= 60_000;
+  for (let k = 0; k < 20; k++) {
+    room.net.ping(1, 40 + k, 60, 20);
+    room.net.ping(2, 300 + k, 58, 35);
+  }
+  room.phase = 'round';
+  room.world = { winner: 1, players: [{ pid: 1, team: 0, loadout: [] }, { pid: 2, team: 1, loadout: [] }] };
+
+  room.finishRound();
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(room.phase, 'done');
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].game, 'bop');
+  const { log } = logs[0];
+  assert.equal(log.outcome, 'finished');
+  assert.equal(log.colo, 'PER');
+  assert.equal(log.code, 'Gas Giants');
+  assert.deepEqual(log.seats.map(seat => seat.name), ['Player 1', 'Player 2']);
+  assert.ok(log.seats[1].rttP95 >= 300 && log.seats[0].rttP95 < 100);
+  assert.equal(room.net, null);
+
+  room.returnToLobby();
+  assert.equal(logs.length, 1, 'returning to the lobby after the result does not log twice');
+});
+
+test('an abandoned match is logged once, a too-short one not at all', async () => {
+  const logs = [];
+  const room = makeRoom();
+  room.env.NETLOG = { record: async (game, log) => { logs.push(log); } };
+  room.colo = 'PER';
+  room.roster.set(1, player(1, 0));
+  room.roster.set(2, player(2, 1));
+  room.beginMatch();
+  room.returnToLobby();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(logs.length, 0);
+  room.beginMatch();
+  room.net.startedAt -= 30_000;
+  room.reset();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].outcome, 'closed');
+});

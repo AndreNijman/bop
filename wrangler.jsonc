@@ -1,3 +1,10 @@
+// BOP online relay (worker.js). `npm run dev` runs it locally.
+//
+// Production is env.production: `rime secret use cloudflare
+// cloudflare.wrangler.deploy bop-relay` runs `wrangler deploy --env
+// production` with the broker's token (see rime.toml in the deploy clone).
+// NETLOG is games-guard's NetLog entrypoint: each finished match's lag
+// statistics go there (games.andrenijman.com/_guard/admin/lag).
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "bop-relay",
@@ -13,5 +20,23 @@
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["GameRoom", "LobbyRegistry"] }
-  ]
+  ],
+  "services": [{ "binding": "NETLOG", "service": "games-guard", "entrypoint": "NetLog" }],
+  // The same Worker name, so production keeps its Durable Object namespace.
+  // Bindings are not inherited by an environment, so they repeat.
+  "env": {
+    "production": {
+      "name": "bop-relay",
+      "workers_dev": true,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      "durable_objects": {
+        "bindings": [
+          { "name": "ROOMS", "class_name": "GameRoom" },
+          { "name": "REGISTRY", "class_name": "LobbyRegistry" }
+        ]
+      },
+      "services": [{ "binding": "NETLOG", "service": "games-guard", "entrypoint": "NetLog" }]
+    }
+  }
 }
