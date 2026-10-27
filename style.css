@@ -253,6 +253,11 @@ button { -webkit-tap-highlight-color: transparent; }
   text-shadow: 1px 1px 0 #0d0a12;
   font-variant-numeric: tabular-nums;
 }
+#net-ping.warn { color: var(--yellow); }
+#net-ping.bad { color: #ff8177; }
+#lobby-region:empty { display: none; }
+.lobby-row .region { white-space: nowrap; }
+.lobby-row .region:empty { display: none; }
 
 .chip {
   padding: 5px 9px;
@@ -745,6 +750,7 @@ button.color-choice.selected { outline: 2px solid var(--cream); outline-offset: 
   .panel { padding: 14px; box-shadow: 5px 6px 0 #0d0a12; }
   .color-row { align-items: flex-start; flex-direction: column; gap: 7px; }
   .color-row strong { width: auto; }
+  .lobby-row { flex-wrap: wrap; }
 }
 
 @media (max-height: 500px) and (min-width: 761px) {

@@ -10,7 +10,8 @@ import { createWorld, step, applyInput, applySnapshot, interpolatedPose, markSpe
 import { createBrain, driveBot } from './bots.js?v=20260821-3';
 import { createRenderer, paintAbilityIcon } from './render.js?v=20260821-3';
 import { createAudio } from './audio.js?v=20260821-3';
-import { createNet, fetchLobbies, relayBase } from './net.js?v=20260821-3';
+import { createNet, fetchLobbies, relayBase, roomPing } from './net.js?v=20260821-3';
+import { probeRegions, regionLabel, REGION_NAMES } from './netprobe.js';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -773,6 +774,8 @@ for (const button of document.querySelectorAll('[data-leave]')) button.addEventL
 
 $('play-online').addEventListener('click', () => {
   audio.resume();
+  // This player's ping to each region, sent to the room for placement.
+  probeRegions();
   show('online');
   refreshLobbies();
 });
@@ -799,6 +802,12 @@ async function refreshLobbies() {
     const meta = document.createElement('span');
     meta.className = 'meta';
     meta.textContent = `${lobby.players}/${lobby.max} · ${lobby.teams ? 'color teams' : 'free for all'} · ${lobby.phase === 'lobby' ? 'waiting' : `round ${lobby.round}`}`;
+    const where = document.createElement('span');
+    where.className = 'meta region';
+    where.textContent = regionLabel(lobby.region, 0);
+    roomPing(lobby.name, lobby.shard).then(({ region, ms }) => {
+      if (region || lobby.region) where.textContent = regionLabel(region || lobby.region, ms);
+    });
     const join = document.createElement('button');
     join.type = 'button';
     join.textContent = 'join';
@@ -808,7 +817,7 @@ async function refreshLobbies() {
       if (lobby.locked) { $('join-password').focus(); toast('That lobby needs a password'); return; }
       connect('join', lobby.name, '');
     });
-    row.append(name, meta, join);
+    row.append(name, where, meta, join);
     list.appendChild(row);
   }
 }
@@ -837,6 +846,7 @@ function connect(action, room, password, settings) {
   G.net?.close();
   const net = createNet({
     onMessage: handleServer,
+    onMove: message => toast(`Moving room to ${REGION_NAMES[message.region] || 'a fairer region'}…`),
     onClose: reason => {
       if (G.mode !== 'online' || G.net !== net) return;
       G.mode = 'menu';
@@ -858,6 +868,7 @@ function handleServer(message) {
       G.locals = [{ pid: message.you, source: 'kb' }];
       show('lobby');
       $('lobby-name').textContent = message.room;
+      showRoomRegion();
       return;
     }
     case 'lobby': {
@@ -967,6 +978,18 @@ function handleServer(message) {
       return;
     }
   }
+}
+
+// The waiting room's region and this player's ms to it ("Asia · 120 ms").
+function showRoomRegion() {
+  const node = $('lobby-region');
+  const room = G.room;
+  const shard = G.net?.shard() || '';
+  if (node.dataset.room !== `${room}|${shard}`) node.textContent = '';
+  node.dataset.room = `${room}|${shard}`;
+  roomPing(room, shard).then(({ region, ms }) => {
+    if (node.dataset.room === `${room}|${shard}`) node.textContent = region ? regionLabel(region, ms) : '';
+  });
 }
 
 function mergeRoster(players) {
@@ -1215,9 +1238,16 @@ function updateHud() {
     G.banner = null;
   }
 
-  $('net-info').textContent = G.mode === 'online'
-    ? `${G.net?.latency() ?? 0} ms · ${world.bodies.length} bodies`
-    : `${world.bodies.length} bodies`;
+  // Live ping: neutral, warning from 120 ms, bad from 200; hidden until the first pong.
+  const rtt = G.mode === 'online' ? G.net?.rtt() ?? -1 : -1;
+  const ping = $('net-ping');
+  ping.hidden = rtt < 0;
+  if (rtt >= 0) {
+    ping.textContent = `${rtt} ms`;
+    ping.classList.toggle('warn', rtt >= 120 && rtt < 200);
+    ping.classList.toggle('bad', rtt >= 200);
+  }
+  $('net-bodies').textContent = `${rtt >= 0 ? ' · ' : ''}${world.bodies.length} bodies`;
 
   canvas.dataset.entities = String(world.bodies.length);
   canvas.dataset.phase = world.phase;

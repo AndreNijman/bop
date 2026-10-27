@@ -36,7 +36,7 @@
         <span><b>WASD</b> move</span><span><b>Space</b> jump</span><span>mouse aims</span>
       </div>
     </div>
-    <div id="net-info"></div>
+    <div id="net-info"><span id="net-ping" hidden></span><span id="net-bodies"></span></div>
   </div>
 
   <!-- Menus -->
@@ -128,6 +128,7 @@
       <header class="screen-head">
         <button class="back" type="button" data-leave="1">leave</button>
         <h2>Lobby <span id="lobby-name"></span></h2>
+        <span id="lobby-region" class="chip" aria-label="Room region and ping"></span>
       </header>
       <div class="split">
         <div class="panel">
