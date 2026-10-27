@@ -854,7 +854,11 @@ function connect(action, room, password, settings) {
   const net = createNet({
     onMessage: handleServer,
     onPong: rtt => selfLag.add(rtt),
-    onMove: message => toast(`Moving room to ${REGION_NAMES[message.region] || 'a fairer region'}…`),
+    onMove: message => {
+      // The new shard is a different round trip; start the estimate over.
+      selfLag.reset();
+      toast(`Moving room to ${REGION_NAMES[message.region] || 'a fairer region'}…`);
+    },
     onClose: reason => {
       if (G.mode !== 'online' || G.net !== net) return;
       G.mode = 'menu';
