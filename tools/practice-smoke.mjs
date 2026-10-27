@@ -7,8 +7,9 @@
 import { chromium } from '@playwright/test';
 import { spawn } from 'node:child_process';
 
-const target = 'http://127.0.0.1:4174';
-const server = spawn('npx', ['serve', '.', '-l', '4174'], { stdio: 'ignore' });
+const port = process.env.PORT || '4174';
+const target = `http://127.0.0.1:${port}`;
+const server = spawn('npx', ['serve', '.', '-l', port], { stdio: 'ignore' });
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function ready() {

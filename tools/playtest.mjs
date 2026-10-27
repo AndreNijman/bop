@@ -19,8 +19,9 @@ const all = args.includes('--all');
 const kit = args.filter(a => !a.startsWith('--'));
 mkdirSync('shots', { recursive: true });
 
-const server = spawn('npx', ['serve', '.', '-l', '4173'], { stdio: 'ignore' });
-const base = 'http://127.0.0.1:4173';
+const port = process.env.PORT || '4173';
+const server = spawn('npx', ['serve', '.', '-l', port], { stdio: 'ignore' });
+const base = `http://127.0.0.1:${port}`;
 const stop = () => server.kill('SIGTERM');
 process.on('exit', stop);
 
