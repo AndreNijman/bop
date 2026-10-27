@@ -1,0 +1,6 @@
+// Local-only stub for tests/latency/rooms.test.mjs. Never deployed.
+{
+  "name": "games-guard",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-20"
+}
