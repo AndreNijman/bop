@@ -16,9 +16,9 @@
 // may move once to a fresh object (a shard) in a fairer region; the players
 // reconnect to it with tickets, and the old object sends later arrivals on.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js?v=20260821-3';
-import { createWorld, step, applyInput, snapshot } from './sim.js?v=20260821-3';
-import { createBrain, driveBot } from './bots.js?v=20260821-3';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js?v=20261027-1';
+import { createWorld, step, applyInput, snapshot } from './sim.js?v=20261027-1';
+import { createBrain, driveBot } from './bots.js?v=20261027-1';
 import { NetStats, sendNetLog, coloOf } from './netstats.js';
 import { REGIONS, playerWhere, withWhere, whereOf, chooseRegion, newShard, shardRegion, roomStub, regionOfColo } from './netplace.js';
 

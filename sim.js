@@ -11,7 +11,7 @@
 // collision routine, which is the only reason a physics game of this size fits
 // in a readable file.
 
-import { TUNE, ABILITY_BY_ID, ABILITY_IDS, MAPS, THEMES, sizeScale, clamp, makeRng } from './data.js?v=20260821-3';
+import { TUNE, ABILITY_BY_ID, ABILITY_IDS, MAPS, THEMES, sizeScale, clamp, makeRng } from './data.js?v=20261027-1';
 
 const SOLID = new Set(['bopl', 'plat', 'grenade', 'boulder', 'mine', 'coil', 'smoke', 'ability']);
 const PROJECTILE = new Set(['arrow', 'missile', 'ray', 'hook']);
