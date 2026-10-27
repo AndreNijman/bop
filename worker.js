@@ -15,12 +15,18 @@
 // it. When the host starts a match for a group spread across regions, the room
 // may move once to a fresh object (a shard) in a fairer region; the players
 // reconnect to it with tickets, and the old object sends later arrivals on.
+//
+// Dev join (netdev.js): a create or join may carry `dev`, a pass games-guard
+// signs for its admins. A verified dev may join any lobby, even locked, full or
+// mid-match. Mid-round they watch the round and draft with everyone for the
+// next one; everyone is told with {t:'dev-joined', name}.
 
 import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js?v=20261027-1';
 import { createWorld, step, applyInput, snapshot } from './sim.js?v=20261027-1';
 import { createBrain, driveBot } from './bots.js?v=20261027-1';
 import { NetStats, sendNetLog, coloOf } from './netstats.js';
 import { REGIONS, playerWhere, withWhere, whereOf, chooseRegion, newShard, shardRegion, roomStub, regionOfColo } from './netplace.js';
+import { verifyDevPass } from './netdev.js';
 
 const TICK_MS = 1000 / 60;
 const SNAPSHOT_EVERY = 4;                 // 15 Hz
@@ -34,6 +40,8 @@ const ADOPT_WAIT_MS = 6000;               // a shard starts without seats that h
 const MOVED_TTL = 6 * 60 * 60_000;        // a forwarding note outlives any real match
 const TICKET = /^[a-z0-9]{16}$/;
 const PRODUCTION_ORIGIN = 'https://bop.andrenijman.com';
+const DEV_HOST = 'bop.andrenijman.com';   // the host dev passes are issued for
+const DEV_SEATS = COLORS.length;          // a dev may go past the lobby's max, not past one color (and spawn) each
 const encoder = new TextEncoder();
 
 function clamp(v, min, max) { return v < min ? min : v > max ? max : v; }
@@ -416,6 +424,8 @@ export class GameRoom {
       session.socket.close(1008);
       return;
     }
+    // DEV_TEST_PUBLIC_KEY is only ever set by the local dev-join tests (wrangler dev --var).
+    const dev = await verifyDevPass(message.dev, DEV_HOST, { publicKey: this.env.DEV_TEST_PUBLIC_KEY || undefined });
     await this.moving;
     if (this.moved) {
       // The room lives on a shard now. The client reconnects there as it came.
@@ -440,15 +450,15 @@ export class GameRoom {
       this.settings.wins = clamp(Math.round(Number(message.settings?.wins) || TUNE.winsToTake), 1, 15);
     } else {
       if (!this.roster.size || this.key !== key) { this.reject(session, 'no lobby has that name'); return; }
-      if (this.phase !== 'lobby') { this.reject(session, 'that match has already started'); return; }
+      if (this.phase !== 'lobby' && !dev) { this.reject(session, 'that match has already started'); return; }
       let humans = [...this.roster.values()].filter(r => !r.bot).length;
-      if (humans >= this.settings.max) { this.reject(session, 'that lobby is full'); return; }
+      if (humans >= (dev ? DEV_SEATS : this.settings.max)) { this.reject(session, 'that lobby is full'); return; }
       const suppliedPassword = await hash(message.password || '');
       if (!this.roster.size || this.key !== key) { this.reject(session, 'no lobby has that name'); return; }
-      if (this.phase !== 'lobby') { this.reject(session, 'that match has already started'); return; }
+      if (this.phase !== 'lobby' && !dev) { this.reject(session, 'that match has already started'); return; }
       humans = [...this.roster.values()].filter(r => !r.bot).length;
-      if (humans >= this.settings.max) { this.reject(session, 'that lobby is full'); return; }
-      if (this.password && !constantTimeEqual(this.password, suppliedPassword)) {
+      if (humans >= (dev ? DEV_SEATS : this.settings.max)) { this.reject(session, 'that lobby is full'); return; }
+      if (this.password && !dev && !constantTimeEqual(this.password, suppliedPassword)) {
         this.reject(session, 'wrong lobby password');
         return;
       }
@@ -469,9 +479,16 @@ export class GameRoom {
     this.syncBots();
 
     this.send(session.socket, { t: 'welcome', you: pid, room: this.room, host: this.host === pid, tune: { slots: TUNE.slots } });
-    this.sendLobby();
+    // Only a dev gets here mid-match. Mid-round they watch the round (begin,
+    // then a full snapshot) and are drafted with everyone for the next one; the
+    // lobby update comes after, as `begin` lists only the round's players.
     if (this.phase === 'round' && this.world) { this.send(session.socket, this.beginPayload()); this.sendFull(session); }
+    this.sendLobby();
     if (this.phase === 'draft') this.broadcastDraft();
+    if (dev) {
+      this.net?.seat(pid, record.name, session.where);
+      this.broadcast({ t: 'dev-joined', name: dev.name });
+    }
     await this.syncRegistry();
   }
 

@@ -10,6 +10,7 @@
 
 import { NetPing } from './netping.js?v=20261027-1';
 import { probeRegions, pingUrl } from './netprobe.js?v=20261027-1';
+import { devPass } from './netdev.js?v=20261027-1';
 
 const RELAY_FALLBACK = 'https://bop-relay.tung-tung-tung-sahur.workers.dev';
 
@@ -60,12 +61,17 @@ export function createNet(handlers) {
     pinger = new NetPing();
     probeRegions().then(ms => { if (ms) { regions = ms; if (socket === current) sendRegions(); } });
     const guard = setTimeout(() => { if (socket && socket.readyState !== 1) socket.close(); }, 12000);
-    socket.onopen = () => {
+    socket.onopen = async () => {
       clearTimeout(guard);
+      // A dev's pass (netdev.js) lets them into any lobby; null for everyone
+      // else, and off andrenijman.com. A move's reconnect sends it again.
+      const dev = await devPass();
+      if (socket !== current) return;
       send({
         t: action, room, name: options.name || 'bopl',
         password: options.password || '',
         settings: options.settings || {},
+        dev: dev?.pass,
       });
       // Pings run from the lobby on, so the relay knows this player's ping
       // to the room before the match starts.

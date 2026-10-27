@@ -13,6 +13,7 @@ import { createAudio } from './audio.js?v=20261027-1';
 import { createNet, fetchLobbies, relayBase, roomPing } from './net.js?v=20261027-1';
 import { probeRegions, regionLabel, REGION_NAMES } from './netprobe.js?v=20261027-1';
 import { createSnapshotClock, createLagEstimate, createSelfTrail } from './netsmooth.js?v=20261027-1';
+import { joinCode, clearJoinCode, setPlayer, showDevJoined } from './netdev.js?v=20261027-1';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -32,6 +33,7 @@ const G = {
   host: false,
   hostPid: -1,
   room: '',
+  lobbyName: '',
   round: 0,
   lastWinner: -1,
   lastWinnerTeam: -1,
@@ -277,6 +279,7 @@ for (const button of document.querySelectorAll('[data-back]')) {
 $('player-name').addEventListener('change', () => {
   G.name = ($('player-name').value || 'bopl').slice(0, 14);
   try { localStorage.setItem('bop-name', G.name); } catch {}
+  setPlayer(G.name, G.mode === 'online' ? G.lobbyName : '');
 });
 
 $('open-abilities').addEventListener('click', () => { audio.play.ui(); buildAbilityGrid(); show('abilities'); });
@@ -766,6 +769,7 @@ $('to-menu').addEventListener('click', () => leave());
 
 function leave() {
   if (G.net) G.net.close();
+  setPlayer(G.name, '');
   G.mode = 'menu';
   G.world = null;
   G.draft = null;
@@ -861,6 +865,7 @@ function connect(action, room, password, settings) {
     },
     onClose: reason => {
       if (G.mode !== 'online' || G.net !== net) return;
+      setPlayer(G.name, '');
       G.mode = 'menu';
       G.world = null;
       show('online');
@@ -878,6 +883,9 @@ function handleServer(message) {
       G.host = !!message.host;
       G.hostPid = G.host ? message.you : -1;
       G.locals = [{ pid: message.you, source: 'kb' }];
+      // The relay's name for the lobby: what the join form (and ?join=) accepts.
+      G.lobbyName = message.room;
+      setPlayer(G.name, message.room);
       show('lobby');
       $('lobby-name').textContent = message.room;
       showRoomRegion();
@@ -940,7 +948,9 @@ function handleServer(message) {
       G.roster = mergeRoster(message.players);
       buildWorld({ seed: message.seed, mapIndex: message.mapIndex, players: message.players }, true);
       show('play');
-      banner(`Round ${message.round}`, mapName(message.mapIndex), 1.2);
+      // A dev who joined mid-round watches it and plays from the next one.
+      if (message.players.some(player => player.pid === G.you)) banner(`Round ${message.round}`, mapName(message.mapIndex), 1.2);
+      else banner('Spectating', 'you join at the next round', 8);
       return;
     }
     case 'full':
@@ -988,6 +998,10 @@ function handleServer(message) {
     case 'err': {
       $('online-error').textContent = message.m;
       toast(message.m);
+      return;
+    }
+    case 'dev-joined': {
+      showDevJoined(message.name);
       return;
     }
   }
@@ -1446,8 +1460,20 @@ async function boot() {
   }
   $('player-name').value = G.name;
   $('player-name').placeholder = G.name;
+  setPlayer(G.name, '');
   show('landing');
   requestAnimationFrame(frame);
+  // The admin page's link into a lobby (https://bop.andrenijman.com/?join=NAME):
+  // straight into the online join, as a dev when this browser has a pass (net.js
+  // sends it), otherwise as anyone, with the password field there if it is locked.
+  const code = joinCode();
+  if (code) {
+    probeRegions();
+    show('online');
+    $('join-name').value = code;
+    connect('join', code, '');
+    clearJoinCode();
+  }
 }
 
 let saveTimer = 0;

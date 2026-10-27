@@ -75,6 +75,7 @@ npm run check         # syntax gate plus the headless simulation checks
 npm test              # solo browser smoke test
 npm run test:mp       # 4 browsers against a real relay
 CLIENTS=4 node tools/mp-smoke.mjs
+npm run test:dev      # dev join (netdev.js): relay tests and a 3-browser smoke
 npm run balance       # ability balance harness
 npm run deploy        # deploy the relay
 ```
