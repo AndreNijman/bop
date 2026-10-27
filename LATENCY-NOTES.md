@@ -71,7 +71,7 @@ The model is (b), so both halves apply. No wire change is needed.
 1. **Remote: adaptive render clock** (new `netsmooth.js`). The render clock
    follows the fastest recent arrival path (windowed minimum of arrival time
    minus server time), stays behind it by the 95th-percentile snapshot arrival
-   gap (clamped to 70-250 ms), and slews toward its target rather than
+   gap (clamped to 100-250 ms; 100 ms is the old fixed delay, so a steady link is never drawn later than before), and slews toward its target rather than
    jumping (it only snaps after a large jump, such as a new round). The 6-sample
    Hermite buffer and the 100 ms extrapolation cap stay as they are, with
    discontinuities still snapping. The old clock stays in the module as the

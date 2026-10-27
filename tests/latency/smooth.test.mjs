@@ -55,6 +55,7 @@ test('the legacy clock is exactly the one the game shipped with', () => {
     for (; frame < at; frame += 1000 / 60) assert.equal(legacy.time(frame), shipped.time(frame));
     legacy.snapshot(serverTime, at);
     shipped.snapshot(serverTime, at);
+    close(legacy.arrivalOf(serverTime), at, 1e-9, 'arrival of the newest snapshot');
   }
 });
 
@@ -62,9 +63,9 @@ test('the adaptive clock sits just behind a steady stream', () => {
   const clock = createSnapshotClock();
   assert.ok(Number.isNaN(clock.time(0)));
   for (const { serverTime, at } of arrivals(rng(1))) clock.snapshot(serverTime, at);
-  close(clock.delay(), 0.07, 1e-9, 'a jitter-free stream needs only the minimum delay');
+  close(clock.delay(), 0.1, 1e-9, 'a jitter-free stream needs only the minimum delay');
   const now = 150 * 4 * TUNE.step * 1000 + 100;
-  close(clock.time(now), now / 1000 - 0.1 - 0.07, 1e-9, 'drawn time');
+  close(clock.time(now), now / 1000 - 0.1 - 0.1, 1e-9, 'drawn time');
   close(clock.arrivalOf(1), 1100, 1e-6, 'a snapshot of server time 1 s is expected at 1.1 s');
 });
 
@@ -76,7 +77,7 @@ test('the adaptive delay follows jitter and stays clamped', () => {
   for (const { serverTime, at } of arrivals(rng(2), { jitter: 40 })) rough.snapshot(serverTime, at);
   for (const { serverTime, at } of arrivals(rng(2), { jitter: 400 })) wild.snapshot(serverTime, at);
   assert.ok(rough.delay() > calm.delay(), `${rough.delay()} > ${calm.delay()}`);
-  assert.ok(rough.delay() > 0.07 && rough.delay() < 0.25);
+  assert.ok(rough.delay() > 0.1 && rough.delay() < 0.25);
   assert.equal(wild.delay(), 0.25);
 });
 

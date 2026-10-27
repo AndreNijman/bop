@@ -16,7 +16,7 @@
 
 import { TUNE, clamp } from './data.js?v=20261027-1';
 
-const MIN_DELAY = 0.07;       // never less than about one snapshot gap
+const MIN_DELAY = 0.1;        // one snapshot gap plus tick and frame slack
 const MAX_DELAY = 0.25;
 const WINDOW = 45;            // arrivals considered, 3 s at 15 Hz
 const SLEW = 0.1;             // the clock runs at most 10% fast or slow
@@ -49,6 +49,7 @@ function fixedClock() {
   };
   return {
     delay: () => 0.1,
+    arrivalOf: serverTime => clock ? (serverTime - clock.serverTime) * 1000 + clock.receivedAt : NaN,
     reset() { clock = null; },
     snapshot(serverTime, receivedAt) {
       const renderTime = time(receivedAt);
