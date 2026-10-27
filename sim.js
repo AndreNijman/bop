@@ -2338,7 +2338,19 @@ function predictionSignature(p) {
   ].join(':');
 }
 
-export function applySnapshot(w, snap, localPid, blend) {
+// How much of a delay-matched error (see `reference` below) one snapshot
+// corrects. The comparison is like for like, so it can be much firmer than the
+// unmatched 6% blend.
+const RECONCILE_GAIN = 0.25;
+
+// `reference`, when given, is what this client predicted for its own blob at
+// the moment the relay simulated this snapshot ({ id, x, y, vx, vy }, from the
+// client's trail of its own poses). The blob is then corrected by the
+// difference between authority and that prediction instead of being pulled
+// toward an authoritative position that is a round trip old, and
+// `reference.applied` reports the correction so the trail can be shifted too.
+// Without it the local blob blends toward authority as it always has.
+export function applySnapshot(w, snap, localPid, blend, reference = null) {
   w.tick = snap.k; w.t = snap.t; w.phase = snap.ph; w.phaseT = snap.pt; w.sudden = snap.sd;
   w.nextAbilitySpawn = (Math.floor(w.t / 40) + 1) * 40;
   w.bounds.x = snap.bx; w.bounds.y = snap.by; w.water = snap.wt;
@@ -2409,9 +2421,24 @@ export function applySnapshot(w, snap, localPid, blend) {
         slamDelay: p.slamDelay, digOut: p.digOut, meteorCharge: p.meteorCharge,
         mass: p.mass, im: p.im, ii: p.ii,
       };
+      const snapDistance = TUNE.maxSpeed / TUNE.snapshotHz * 1.25;
+      if (reference?.id === p.id) {
+        const ex = d[1] - reference.x, ey = d[2] - reference.y;
+        const evx = d[3] - reference.vx, evy = d[4] - reference.vy;
+        const k = len(ex, ey) > snapDistance ? 1 : RECONCILE_GAIN;
+        const applied = { dx: ex * k, dy: ey * k, dvx: evx * k, dvy: evy * k };
+        const keep = { x: p.x + applied.dx, y: p.y + applied.dy, vx: p.vx + applied.dvx, vy: p.vy + applied.dvy };
+        applyBoplDynamic(p, d, true);
+        const contradicted = predictionSignature(p) !== predictedSignature;
+        p.authorityMismatch = contradicted ? (p.authorityMismatch || 0) + 1 : 0;
+        if (p.authorityMismatch < 6) Object.assign(p, predicted);
+        Object.assign(p, keep);
+        reference.applied = applied;
+        recordSnapshotPose(p, snap.k * TUNE.step, !blend);
+        continue;
+      }
       const ex = d[1] - p.x, ey = d[2] - p.y;
       const err = len(ex, ey);
-      const snapDistance = TUNE.maxSpeed / TUNE.snapshotHz * 1.25;
       const k = err > snapDistance ? 1 : 0.06;
       const keepX = p.x + ex * k, keepY = p.y + ey * k;
       const keepVx = p.vx, keepVy = p.vy;

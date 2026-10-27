@@ -12,6 +12,7 @@ import { createRenderer, paintAbilityIcon } from './render.js?v=20261027-1';
 import { createAudio } from './audio.js?v=20261027-1';
 import { createNet, fetchLobbies, relayBase, roomPing } from './net.js?v=20261027-1';
 import { probeRegions, regionLabel, REGION_NAMES } from './netprobe.js?v=20261027-1';
+import { createSnapshotClock, createLagEstimate, createSelfTrail } from './netsmooth.js?v=20261027-1';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');
@@ -48,13 +49,18 @@ const G = {
   stats: { matches: 0, rounds: 0, wins: 0, kills: 0, deaths: 0 },
   cloud: false,
   name: 'bopl',
-  snapshotClock: null,
   renderAlpha: 1,
 };
 
 // ---------------------------------------------------------------------------
 // Input
 // ---------------------------------------------------------------------------
+
+// Delay hiding for online play (netsmooth.js): the clock remote bodies are
+// drawn at, this player's lag to the relay, and their own recent predicted poses.
+const renderClock = createSnapshotClock();
+const selfLag = createLagEstimate();
+const selfTrail = createSelfTrail();
 
 const keys = new Set();
 const pointer = { x: 0, y: 0, buttons: [false, false, false], active: false };
@@ -844,8 +850,10 @@ function connect(action, room, password, settings) {
   G.room = clean;
   G.pendingAction = action;
   G.net?.close();
+  selfLag.reset();
   const net = createNet({
     onMessage: handleServer,
+    onPong: rtt => selfLag.add(rtt),
     onMove: message => toast(`Moving room to ${REGION_NAMES[message.region] || 'a fairer region'}…`),
     onClose: reason => {
       if (G.mode !== 'online' || G.net !== net) return;
@@ -934,15 +942,16 @@ function handleServer(message) {
     case 'full':
     case 'snap': {
       if (!G.world) return;
-      applySnapshot(G.world, message, G.you, !message.full);
-      const receivedAt = performance.now();
-      const packetTime = message.k * TUNE.step;
-      const renderTime = interpolationTime(receivedAt);
-      G.snapshotClock = {
-        serverTime: packetTime,
-        receivedAt,
-        renderTime: Number.isFinite(renderTime) ? renderTime : packetTime - 0.1,
-      };
+      renderClock.snapshot(message.k * TUNE.step, performance.now());
+      // Correct this player's prediction against what it predicted for the
+      // moment the relay simulated, one input-to-snapshot lag ago.
+      const self = ownBody();
+      const lag = selfLag.seconds();
+      const reference = self && !message.full && Number.isFinite(lag)
+        ? selfTrail.at(renderClock.arrivalOf(message.k * TUNE.step) - lag * 1000)
+        : null;
+      applySnapshot(G.world, message, G.you, !message.full, reference);
+      if (reference?.applied) selfTrail.shift(reference.applied);
       const localAlive = G.world.players.some(player => player.pid === G.you && player.alive);
       if (G.authoritativeAlive && !localAlive) {
         const player = G.world.players.find(candidate => candidate.pid === G.you);
@@ -1053,7 +1062,8 @@ $('chat-form').addEventListener('submit', event => {
 function buildWorld(setup, speculative = false) {
   G.world = createWorld(setup);
   accumulator = 0;
-  G.snapshotClock = null;
+  renderClock.reset();
+  selfTrail.clear();
   for (const body of G.world.bodies) {
     body.previousX = body.x;
     body.previousY = body.y;
@@ -1075,13 +1085,11 @@ function openEliminatedSelect(player) {
   show('draft');
 }
 
+// Remote entities render a little behind authority, by an amount that follows
+// the measured snapshot jitter, so two real snapshots are nearly always
+// available to interpolate between.
 function interpolationTime(now) {
-  if (!G.snapshotClock) return NaN;
-  // Remote entities render briefly behind authority so two real snapshots are
-  // available to interpolate instead of extrapolating every network wobble.
-  const target = G.snapshotClock.serverTime + Math.max(0, now - G.snapshotClock.receivedAt) / 1000 - 0.1;
-  G.snapshotClock.renderTime = Math.max(G.snapshotClock.renderTime ?? target, target);
-  return G.snapshotClock.renderTime;
+  return renderClock.time(now);
 }
 
 function fixedStepPose(body, alpha) {
@@ -1135,6 +1143,11 @@ function buildSlots() {
     slot.addEventListener('pointerleave', () => { touch.slots[i] = false; });
     wrap.appendChild(slot);
   }
+}
+
+// This player's own blob (not a Duplicator clone), the one the trail follows.
+function ownBody() {
+  return G.world?.players.find(p => p.pid === G.you && p.alive && !p.clone) || null;
 }
 
 function localPlayer() {
@@ -1325,6 +1338,8 @@ function frame(now) {
       accumulator -= TUNE.step;
       steps++;
     }
+
+    if (G.mode === 'online') selfTrail.record(now, ownBody());
 
     if (G.mode === 'offline' && G.locals.length === 1) {
       const localAlive = world.players.some(player => player.pid === G.you && player.alive);

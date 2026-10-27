@@ -76,7 +76,11 @@ export function createNet(handlers) {
     socket.onmessage = event => {
       let message;
       try { message = JSON.parse(event.data); } catch { return; }
-      if (message.t === 'pong') { const rtt = pinger?.pong(message.c) ?? -1; if (rtt >= 0) latency = rtt; return; }
+      if (message.t === 'pong') {
+        const rtt = pinger?.pong(message.c) ?? -1;
+        if (rtt >= 0) { latency = rtt; handlers.onPong?.(rtt); }
+        return;
+      }
       if (message.t === 'move') {
         // Reconnect to the shard. A ticket takes back this player's seat; without
         // one (a late arrival) the client comes in as it did here.
