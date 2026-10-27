@@ -21,9 +21,9 @@
 // mid-match. Mid-round they watch the round and draft with everyone for the
 // next one; everyone is told with {t:'dev-joined', name}.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js?v=20261027-1';
-import { createWorld, step, applyInput, snapshot } from './sim.js?v=20261027-1';
-import { createBrain, driveBot } from './bots.js?v=20261027-1';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, MAPS, COLORS, BOT_NAMES } from './data.js?v=20261027-2';
+import { createWorld, step, applyInput, snapshot } from './sim.js?v=20261027-2';
+import { createBrain, driveBot } from './bots.js?v=20261027-2';
 import { NetStats, sendNetLog, coloOf } from './netstats.js';
 import { REGIONS, playerWhere, withWhere, whereOf, chooseRegion, newShard, shardRegion, roomStub, regionOfColo } from './netplace.js';
 import { verifyDevPass } from './netdev.js';

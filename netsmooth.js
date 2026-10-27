@@ -14,7 +14,7 @@
 //   compared with what this client predicted for the moment the relay
 //   simulated, not with where the blob is now (see applySnapshot in sim.js).
 
-import { TUNE, clamp } from './data.js?v=20261027-1';
+import { TUNE, clamp } from './data.js?v=20261027-2';
 
 const MIN_DELAY = 0.1;        // one snapshot gap plus tick and frame slack
 const MAX_DELAY = 0.25;

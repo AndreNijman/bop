@@ -5,15 +5,15 @@
 // live in sim.js, all the numbers live in data.js, so this file never decides
 // anything about the game itself.
 
-import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20261027-1';
-import { createWorld, step, applyInput, applySnapshot, interpolatedPose, markSpeculative, snapshot } from './sim.js?v=20261027-1';
-import { createBrain, driveBot } from './bots.js?v=20261027-1';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20261027-1';
-import { createAudio } from './audio.js?v=20261027-1';
-import { createNet, fetchLobbies, relayBase, roomPing } from './net.js?v=20261027-1';
-import { probeRegions, regionLabel, REGION_NAMES } from './netprobe.js?v=20261027-1';
-import { createSnapshotClock, createLagEstimate, createSelfTrail } from './netsmooth.js?v=20261027-1';
-import { joinCode, clearJoinCode, setPlayer, showDevJoined } from './netdev.js?v=20261027-1';
+import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20261027-2';
+import { createWorld, step, applyInput, applySnapshot, interpolatedPose, markSpeculative, snapshot } from './sim.js?v=20261027-2';
+import { createBrain, driveBot } from './bots.js?v=20261027-2';
+import { createRenderer, paintAbilityIcon } from './render.js?v=20261027-2';
+import { createAudio } from './audio.js?v=20261027-2';
+import { createNet, fetchLobbies, relayBase, roomPing } from './net.js?v=20261027-2';
+import { probeRegions, regionLabel, REGION_NAMES } from './netprobe.js?v=20261027-2';
+import { createSnapshotClock, createLagEstimate, createSelfTrail } from './netsmooth.js?v=20261027-2';
+import { joinCode, clearJoinCode, setPlayer, showDevJoined } from './netdev.js?v=20261027-2';
 
 const $ = id => document.getElementById(id);
 const canvas = $('game');

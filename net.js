@@ -8,9 +8,9 @@
 // ({t:'move'}, see worker.js): the relay hands over a ticket and the client
 // reconnects to the room's new shard on its own.
 
-import { NetPing } from './netping.js?v=20261027-1';
-import { probeRegions, pingUrl } from './netprobe.js?v=20261027-1';
-import { devPass } from './netdev.js?v=20261027-1';
+import { NetPing } from './netping.js?v=20261027-2';
+import { probeRegions, pingUrl } from './netprobe.js?v=20261027-2';
+import { devPass } from './netdev.js?v=20261027-2';
 
 const RELAY_FALLBACK = 'https://bop-relay.tung-tung-tung-sahur.workers.dev';
 
