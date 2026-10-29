@@ -149,6 +149,27 @@ try {
 
   if (await page.locator('#game').getAttribute('data-render-error')) problems.push('renderer lost the local player');
 
+  // Middle click fires ability three and never starts the browser's autoscroll,
+  // even while the left button is already held.
+  await page.evaluate(() => {
+    window.__middle = [];
+    addEventListener('mousedown', e => { if (e.button === 1) window.__middle.push(e.defaultPrevented); });
+  });
+  await page.mouse.move(683 + 6 * scale, 384 - 1.6 * scale);
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.down({ button: 'middle' });
+  await page.waitForTimeout(120);
+  await page.mouse.up({ button: 'middle' });
+  await page.mouse.up({ button: 'left' });
+  await page.waitForTimeout(180);
+  const middle = await page.evaluate(() => window.__middle);
+  if (!middle.length || middle.some(prevented => !prevented)) problems.push(`middle click was not claimed from the browser: ${JSON.stringify(middle)}`);
+  const afterMiddle = await page.evaluate(() => JSON.parse(document.querySelector('#game').dataset.testPlayer));
+  const third = afterMiddle.slots[2];
+  if (afterMiddle.alive && (!third || (third.cd <= 0 && third.state !== 1 && afterMiddle.form === 'normal'))) {
+    problems.push(`middle click did not fire ability three while left was held: ${JSON.stringify(third)}`);
+  }
+
   // Let the round play itself out for a while and make sure nothing explodes.
   await page.waitForTimeout(4000);
   const late = await page.evaluate(() => window.BOP.state());

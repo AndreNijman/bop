@@ -85,6 +85,9 @@ addEventListener('blur', () => {
 });
 
 canvas.addEventListener('contextmenu', event => event.preventDefault());
+// Middle click is ability three, not the browser's autoscroll or paste.
+canvas.addEventListener('mousedown', event => { if (event.button === 1) event.preventDefault(); });
+canvas.addEventListener('auxclick', event => { if (event.button === 1) event.preventDefault(); });
 canvas.addEventListener('pointerdown', event => {
   audio.resume();
   if (event.pointerType === 'touch') { usingTouch = true; handleTouchDown(event); return; }
@@ -99,6 +102,11 @@ addEventListener('pointerup', event => {
 });
 addEventListener('pointermove', event => {
   if (event.pointerType === 'touch') { handleTouchMove(event); return; }
+  // A second button pressed or released while one is held arrives as a move,
+  // not as pointerdown/up, so read every button from the bitmask.
+  if (event.pointerType === 'mouse' && canvas.hasPointerCapture?.(event.pointerId)) {
+    pointer.buttons = [(event.buttons & 1) !== 0, (event.buttons & 2) !== 0, (event.buttons & 4) !== 0];
+  }
   updatePointer(event);
 });
 
