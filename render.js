@@ -205,6 +205,26 @@ function ditherKeep(alpha, x, y) {
   return false;
 }
 
+// Disc in art pixels, dithered when translucent. `ring` keeps only the
+// outer band that many pixels wide.
+function rasterDisc(S, cx, cy, r, color, alpha = 1, ring = 0) {
+  if (r <= 0 || alpha < 0.2) return;
+  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(S.w - 1, Math.ceil(cx + r));
+  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(S.h - 1, Math.ceil(cy + r));
+  if (x1 < x0 || y1 < y0) return;
+  const c32 = pack(color), u32 = S.u32, W = S.w;
+  const r2 = r * r, in2 = ring ? Math.max(0, r - ring) ** 2 : -1;
+  for (let y = y0; y <= y1; y++) {
+    const dy = y + 0.5 - cy;
+    for (let x = x0; x <= x1; x++) {
+      const dx = x + 0.5 - cx, d = dx * dx + dy * dy;
+      if (d > r2 || d < in2 || !ditherKeep(alpha, x, y)) continue;
+      u32[y * W + x] = c32;
+    }
+  }
+  touch(S, x0, y0, x1, y1);
+}
+
 // ---------------------------------------------------------------------------
 // Terrain raster
 // ---------------------------------------------------------------------------
@@ -1025,41 +1045,35 @@ export function createRenderer(canvas) {
     }
   }
 
-  // Translucent effects drawn straight onto the buffer.
-  function drawFx(c, b, view) {
+  // Translucent effects, rastered as whole pixels and ordered-dithered
+  // instead of alpha-blended so they sit in the same grid as everything else.
+  function rasterFx(S, b, ox, oy) {
+    const x = ox + b.x * PPU, y = oy + b.y * PPU;
     switch (b.kind) {
       case 'smoke': {
-        c.globalAlpha = (b.lit ? 0.9 : 0.7) * clamp(b.ttl / 2, 0.25, 1);
-        c.beginPath(); c.arc(b.x, b.y, b.r, 0, TAU);
-        c.fillStyle = b.lit ? '#f09a3c' : '#b6b4c4'; c.fill();
-        c.beginPath(); c.arc(b.x - b.r * 0.3, b.y - b.r * 0.3, b.r * 0.55, 0, TAU);
-        c.fillStyle = b.lit ? '#f0d060' : '#d4d2de'; c.fill();
-        c.globalAlpha = 1;
+        const a = (b.lit ? 1 : 0.85) * clamp(b.ttl / 2, 0.25, 1);
+        const r = b.r * PPU;
+        const [dark, mid, light] = b.lit ? ['#c8642a', '#f09a3c', '#f0d060'] : ['#8a88a0', '#b6b4c4', '#e4e2ec'];
+        rasterDisc(S, x + 1, y + 1, r, dark, a);
+        rasterDisc(S, x, y, r - 0.5, mid, a);
+        rasterDisc(S, x - r * 0.3, y - r * 0.3, r * 0.55, light, a);
         break;
       }
       case 'hole': {
-        const rings = b.white ? ['#dceefa', '#b4d8f4', '#ffffff'] : ['#4a2a6a', '#2a1440', '#0a0510'];
-        c.globalAlpha = 0.28;
-        c.fillStyle = rings[0];
-        c.beginPath(); c.arc(b.x, b.y, b.core * 4.2, 0, TAU); c.fill();
-        c.globalAlpha = 0.45;
-        c.beginPath(); c.arc(b.x, b.y, b.core * 2.4, 0, TAU); c.fill();
-        c.globalAlpha = 1;
-        c.fillStyle = rings[1];
-        c.beginPath(); c.arc(b.x, b.y, b.core * 1.35, 0, TAU); c.fill();
-        c.fillStyle = rings[2];
-        c.beginPath(); c.arc(b.x, b.y, b.core, 0, TAU); c.fill();
+        const [outer, inner, core] = b.white ? ['#dceefa', '#b4d8f4', '#ffffff'] : ['#4a2a6a', '#2a1440', '#0a0510'];
+        const r = b.core * PPU;
+        rasterDisc(S, x, y, r * 4.2, outer, 0.25);
+        rasterDisc(S, x, y, r * 2.4, outer, 0.5);
+        rasterDisc(S, x, y, r * 1.35 + 1, INK, 1);
+        rasterDisc(S, x, y, r * 1.35, inner, 1);
+        rasterDisc(S, x, y, r, core, 1);
         break;
       }
       case 'bubble': {
-        c.globalAlpha = 0.22;
-        c.beginPath(); c.arc(b.x, b.y, b.r, 0, TAU);
-        c.fillStyle = '#9ad0f0'; c.fill();
-        c.globalAlpha = 1;
-        c.lineWidth = 1 / PPU; c.strokeStyle = '#d4f0fc';
-        c.beginPath(); c.arc(b.x, b.y, b.r - 0.5 / PPU, 0, TAU); c.stroke();
-        c.fillStyle = '#ffffff';
-        c.fillRect(b.x - b.r * 0.55, b.y - b.r * 0.55, 2 / PPU, 2 / PPU);
+        const r = b.r * PPU;
+        rasterDisc(S, x, y, r, '#9ad0f0', 0.25);
+        rasterDisc(S, x, y, r, '#d4f0fc', 1, 1);
+        rasterDisc(S, x - r * 0.5, y - r * 0.5, 1.2, '#ffffff', 1);
         break;
       }
     }
@@ -1366,12 +1380,12 @@ export function createRenderer(canvas) {
     drawWater(bctx, world, view, ox, oy, W, H);
 
     // Translucent effects under the props.
-    bctx.setTransform(PPU, 0, 0, PPU, ox, oy);
+    clearSurface(S);
     for (const b of world.bodies) {
       if (b.hidden > 0) continue;
-      if (b.kind === 'hole' || b.kind === 'bubble') drawFx(bctx, b, view);
+      if (b.kind === 'hole' || b.kind === 'bubble') rasterFx(S, b, ox, oy);
     }
-    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    flushSurface(S, bctx);
 
     // Inked props.
     let c = pathLayer(ox, oy);
@@ -1444,9 +1458,9 @@ export function createRenderer(canvas) {
     flushPaths(true);
 
     // Smoke over everything it hides.
-    bctx.setTransform(PPU, 0, 0, PPU, ox, oy);
-    for (const b of world.bodies) if (b.kind === 'smoke' && !(b.hidden > 0)) drawFx(bctx, b, view);
-    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    clearSurface(S);
+    for (const b of world.bodies) if (b.kind === 'smoke' && !(b.hidden > 0)) rasterFx(S, b, ox, oy);
+    flushSurface(S, bctx);
 
     // Particles: square pixels that step darker instead of fading.
     for (const p of particles) {
