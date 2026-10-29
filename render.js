@@ -374,27 +374,31 @@ function rasterPlatform(S, b, pal, ox, oy, ppu, t, opts = {}) {
     }
   }
 
-  if (opts.studs) {
-    // Lamps are the tell that a platform travels.
-    const on = Math.sin(t * 4) > -0.2;
-    for (const side of [-0.55, 0.55]) {
-      const wx = bx + c * hx * side - s * r * 0.15;
-      const wy = by + s * hx * side + c * r * 0.15;
-      const cx = Math.round(ox + wx * ppu), cy = Math.round(oy + wy * ppu);
-      for (let y = -2; y <= 2; y++) for (let x = -2; x <= 2; x++) {
-        const px = cx + x, py = cy + y;
-        if (px < 0 || py < 0 || px >= S.w || py >= S.h) continue;
-        const edge = Math.abs(x) === 2 || Math.abs(y) === 2;
-        if (edge && Math.abs(x) === 2 && Math.abs(y) === 2) continue;
-        u32[py * W + px] = edge ? INK32 : pack(on ? (x < 1 && y < 0 ? '#fff4b8' : '#f0c040') : '#8a6a2a');
-      }
-    }
-  }
+  if (opts.studs) rasterStuds(S, b, ox, oy, ppu, t);
   if (opts.eyes) {
     for (const side of [-1, 1]) {
       const wx = bx + c * hx * 0.3 * side - s * r * 0.1;
       const wy = by + s * hx * 0.3 * side + c * r * 0.1;
       rasterEye(S, ox + wx * ppu, oy + wy * ppu, Math.max(2, r * ppu * 0.32), opts.eyes.ax, opts.eyes.ay, false);
+    }
+  }
+}
+
+// Lamps are the tell that a platform travels.
+function rasterStuds(S, b, ox, oy, ppu, t) {
+  const c = Math.cos(b.ang), s = Math.sin(b.ang);
+  const hx = b.hx, r = b.r, bx = b.x, by = b.y, u32 = S.u32, W = S.w;
+  const on = Math.sin(t * 4) > -0.2;
+  for (const side of [-0.55, 0.55]) {
+    const wx = bx + c * hx * side - s * r * 0.15;
+    const wy = by + s * hx * side + c * r * 0.15;
+    const cx = Math.round(ox + wx * ppu), cy = Math.round(oy + wy * ppu);
+    for (let y = -2; y <= 2; y++) for (let x = -2; x <= 2; x++) {
+      const px = cx + x, py = cy + y;
+      if (px < 0 || py < 0 || px >= S.w || py >= S.h) continue;
+      const edge = Math.abs(x) === 2 || Math.abs(y) === 2;
+      if (edge && Math.abs(x) === 2 && Math.abs(y) === 2) continue;
+      u32[py * W + px] = edge ? INK32 : pack(on ? (x < 1 && y < 0 ? '#fff4b8' : '#f0c040') : '#8a6a2a');
     }
   }
 }
@@ -520,8 +524,8 @@ function rasterBopl(S, cx, cy, rad, color, o = {}) {
 // optionally inked.
 // ---------------------------------------------------------------------------
 
-function hardenLayer(ctx, w, h, outline) {
-  const image = ctx.getImageData(0, 0, w, h);
+function hardenLayer(ctx, w, h, outline, x0 = 0, y0 = 0) {
+  const image = ctx.getImageData(x0, y0, w, h);
   const u32 = new Uint32Array(image.data.buffer);
   const n = w * h;
   let any = false;
@@ -544,7 +548,7 @@ function hardenLayer(ctx, w, h, outline) {
     }
     for (let i = 0; i < n; i++) if (u32[i] === 1) u32[i] = INK32;
   }
-  ctx.putImageData(image, 0, 0);
+  ctx.putImageData(image, x0, y0);
   return true;
 }
 
@@ -1255,15 +1259,69 @@ export function createRenderer(canvas) {
     }
   }
 
+  // Vector layers are hardened into pixels by reading them back, which is the
+  // expensive part, so each layer reads only the box its contents can reach.
+  // Callers mark() every item they draw; a layer with no marks is skipped.
+  const box = { x0: 0, y0: 0, x1: -1, y1: -1, ox: 0, oy: 0 };
   function pathLayer(ox, oy) {
     pctx.setTransform(1, 0, 0, 1, 0, 0);
     pctx.clearRect(0, 0, paths.width, paths.height);
     pctx.setTransform(PPU, 0, 0, PPU, ox, oy);
+    box.x0 = paths.width; box.y0 = paths.height; box.x1 = -1; box.y1 = -1;
+    box.ox = ox; box.oy = oy;
     return pctx;
+  }
+  function mark(wx, wy, wr) {
+    const px = box.ox + wx * PPU, py = box.oy + wy * PPU, pr = wr * PPU + 3;
+    if (px - pr < box.x0) box.x0 = px - pr;
+    if (py - pr < box.y0) box.y0 = py - pr;
+    if (px + pr > box.x1) box.x1 = px + pr;
+    if (py + pr > box.y1) box.y1 = py + pr;
   }
   function flushPaths(outline) {
     pctx.setTransform(1, 0, 0, 1, 0, 0);
-    if (hardenLayer(pctx, paths.width, paths.height, outline)) bctx.drawImage(paths, 0, 0);
+    const x0 = Math.max(0, Math.floor(box.x0)), y0 = Math.max(0, Math.floor(box.y0));
+    const x1 = Math.min(paths.width, Math.ceil(box.x1)), y1 = Math.min(paths.height, Math.ceil(box.y1));
+    if (x1 <= x0 || y1 <= y0) return;
+    const w = x1 - x0, h = y1 - y0;
+    if (hardenLayer(pctx, w, h, outline, x0, y0)) bctx.drawImage(paths, x0, y0, w, h, x0, y0, w, h);
+  }
+
+  // Terrain sprites: a platform is rastered once per shape and angle (to about
+  // a pixel of travel at its tip), then copied in by whole pixels as it moves.
+  const plats = new Map();
+  let frameNo = 0;
+  function platformSprite(b, pal, theme) {
+    const span = (b.hx + b.r) * PPU;
+    const q = 1 / Math.max(8, span);
+    const ang = Math.round(b.ang / q) * q;
+    const key = `${theme}|${b.ptype}|${b.hx.toFixed(3)}|${b.r.toFixed(3)}|${ang.toFixed(5)}`;
+    let e = plats.get(b.id);
+    if (!e || e.key !== key) {
+      const half = Math.ceil(span) + 10;
+      const S2 = e && e.S.w === half * 2 ? e.S : makeSurface(half * 2, half * 2);
+      clearSurface(S2);
+      rasterPlatform(S2, { id: b.id, x: 0, y: 0, ang, hx: b.hx, r: b.r }, pal, half, half, PPU, 0,
+        { dotted: b.ptype === 'free' });
+      e = { key, S: S2, half };
+      plats.set(b.id, e);
+    }
+    e.seen = frameNo;
+    return e;
+  }
+  function blitSprite(S, e, X, Y) {
+    const src = e.S, sw = src.w, su = src.u32, du = S.u32, W = S.w;
+    const x0 = Math.max(src.x0, -X), x1 = Math.min(src.x1, S.w - 1 - X);
+    const y0 = Math.max(src.y0, -Y), y1 = Math.min(src.y1, S.h - 1 - Y);
+    if (x1 < x0 || y1 < y0) return;
+    for (let y = y0; y <= y1; y++) {
+      const si = y * sw, di = (y + Y) * W + X;
+      for (let x = x0; x <= x1; x++) {
+        const v = su[si + x];
+        if (v !== 0) du[di + x] = v;
+      }
+    }
+    touch(S, X + x0, Y + y0, X + x1, Y + y1);
   }
 
   function drawWater(c, world, view, ox, oy, W, H) {
@@ -1371,11 +1429,14 @@ export function createRenderer(canvas) {
     // Terrain.
     const S = rasterS;
     clearSurface(S);
+    frameNo++;
     for (const b of world.bodies) {
       if (b.kind !== 'plat' || b.hidden > 0) continue;
-      rasterPlatform(S, b, paletteFor(world.theme, b.ptype), ox, oy, PPU, view.time,
-        { studs: b.ptype === 'moving', dotted: b.ptype === 'free' });
+      const e = platformSprite(b, paletteFor(world.theme, b.ptype), world.theme);
+      blitSprite(S, e, Math.round(ox + b.x * PPU) - e.half, Math.round(oy + b.y * PPU) - e.half);
+      if (b.ptype === 'moving') rasterStuds(S, b, ox, oy, PPU, view.time);
     }
+    if (plats.size > 48) for (const [id, e] of plats) if (e.seen !== frameNo) plats.delete(id);
     flushSurface(S, bctx);
     drawWater(bctx, world, view, ox, oy, W, H);
 
@@ -1391,15 +1452,20 @@ export function createRenderer(canvas) {
     let c = pathLayer(ox, oy);
     for (const b of world.bodies) {
       if (b.kind === 'plat' || b.kind === 'bopl' || b.hidden > 0) continue;
+      mark(b.x, b.y, (b.hx || 0) + 3 * (b.r || 0.3) + 0.5);
       drawObject(c, b, view);
     }
-    for (const p of world.players) drawPlayerProps(c, p, world, view);
+    for (const p of world.players) {
+      if (p.form === 'rock' || p.form === 'drill') mark(p.x, p.y, p.r * 2.2);
+      drawPlayerProps(c, p, world, view);
+    }
     flushPaths(true);
 
     // Glows under the bopls: tesla arcs, ropes, flames, orbs.
     c = pathLayer(ox, oy);
     for (const b of world.bodies) {
       if (b.hidden > 0) continue;
+      if (b.kind === 'ray' || b.kind === 'missile' || b.kind === 'engine' || b.kind === 'orb') mark(b.x, b.y, (b.hx || 0) + 3 * b.r + 0.5);
       drawGlow(c, b, view);
     }
     const coils = world.bodies.filter(b => b.kind === 'coil');
@@ -1408,6 +1474,7 @@ export function createRenderer(canvas) {
         const a = coils[i], b = coils[j];
         if (a.owner !== b.owner || a.slot !== b.slot) continue;
         if ((a.arcOff || 0) > 0 || (b.arcOff || 0) > 0) continue;
+        mark(a.x, a.y, 0.5); mark(b.x, b.y, 0.5);
         c.beginPath();
         const steps = 10;
         for (let n = 0; n <= steps; n++) {
@@ -1428,6 +1495,7 @@ export function createRenderer(canvas) {
       const cs = Math.cos(host.ang), s = Math.sin(host.ang);
       const ax = host.x + (p.grappleLx * cs - p.grappleLy * s);
       const ay = host.y + (p.grappleLx * s + p.grappleLy * cs);
+      mark(p.x, p.y, 0.2); mark(ax, ay, 0.2);
       c.beginPath(); c.moveTo(p.x, p.y); c.lineTo(ax, ay);
       c.strokeStyle = INK; c.lineWidth = 3 / PPU; c.stroke();
       c.strokeStyle = '#e6d8b0'; c.lineWidth = 1.2 / PPU; c.stroke();
@@ -1436,6 +1504,7 @@ export function createRenderer(canvas) {
       if (!p.alive || p.heldId < 0) continue;
       const held = world.bodies.find(b => b.id === p.heldId);
       if (!held) continue;
+      mark(p.x, p.y, 0.2); mark(held.x, held.y, 0.2);
       c.setLineDash([3 / PPU, 3 / PPU]);
       c.beginPath(); c.moveTo(p.x, p.y); c.lineTo(held.x, held.y);
       c.strokeStyle = '#9ad0f0'; c.lineWidth = 1.5 / PPU; c.stroke();
@@ -1451,10 +1520,18 @@ export function createRenderer(canvas) {
 
     // Beams and held gear on top.
     c = pathLayer(ox, oy);
-    for (const p of world.players) drawPlayerGlow(c, p, view);
+    for (const p of world.players) {
+      if (!p.alive) continue;
+      if (p.form === 'beam') { const reach = p.beamLen || 8; mark(p.x + p.input.ax * reach, p.y + p.input.ay * reach, 0.4); }
+      if (p.form !== 'normal' || p.charge > 0) mark(p.x, p.y, p.r * 3.4 + 0.5);
+      drawPlayerGlow(c, p, view);
+    }
     flushPaths(false);
     c = pathLayer(ox, oy);
-    for (const p of world.players) drawPlayerGear(c, p, view);
+    for (const p of world.players) {
+      if (p.alive && (p.form === 'bow' || p.form === 'gun')) mark(p.x, p.y, p.r * 2.5);
+      drawPlayerGear(c, p, view);
+    }
     flushPaths(true);
 
     // Smoke over everything it hides.
