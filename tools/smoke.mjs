@@ -103,7 +103,9 @@ try {
 
   // Fire Dash before movement testing can carry the local bopl off an edge.
   // Calm practice guarantees this assertion exercises the real input path.
-  await page.mouse.move(1000, 300);
+  // Aim at a world point, not a screen pixel, so the zoom cannot move the target.
+  const { scale } = await page.evaluate(() => window.BOP.state());
+  await page.mouse.move(683 + 6 * scale, 384 - 1.6 * scale);
   await page.mouse.down();
   await page.waitForTimeout(120);
   await page.mouse.up();

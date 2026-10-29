@@ -90,7 +90,7 @@ a local relay.
 | `data.js` | tuning, the 29 abilities, the 15 arenas. Imported by client, relay and tools, so numbers cannot drift |
 | `sim.js` | the whole game: capsule physics, abilities, death rules, wire format. No DOM, no network, no `Math.random` |
 | `bots.js` | bot brains for the optional practice mode and simulation harness |
-| `render.js` | canvas renderer. Every pixel is drawn in code |
+| `render.js` | pixel-art renderer: the world is painted at 24 art pixels per world unit and upscaled by whole multiples, in the same ink-outlined style as Fart Together, Stinkwater and Scoop Trouble. Every pixel is drawn in code |
 | `audio.js` | WebAudio synthesis. No audio files |
 | `net.js` | one websocket |
 | `game.js` | input, screens, HUD |

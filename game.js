@@ -8,7 +8,7 @@
 import { TUNE, ABILITIES, ABILITY_BY_ID, SELECTABLE_ABILITIES, resolveLoadout, COLORS, MAPS, BOT_NAMES, clamp } from './data.js?v=20261027-2';
 import { createWorld, step, applyInput, applySnapshot, interpolatedPose, markSpeculative, snapshot } from './sim.js?v=20261027-2';
 import { createBrain, driveBot } from './bots.js?v=20261027-2';
-import { createRenderer, paintAbilityIcon } from './render.js?v=20261027-2';
+import { createRenderer, paintAbilityIcon, paintBrand as paintBrandScene } from './render.js?v=20261029-1';
 import { createAudio } from './audio.js?v=20261027-2';
 import { createNet, fetchLobbies, relayBase, roomPing } from './net.js?v=20261027-2';
 import { probeRegions, regionLabel, REGION_NAMES } from './netprobe.js?v=20261027-2';
@@ -260,11 +260,14 @@ function colorPicker(selected, label, onPick) {
   return picker;
 }
 
+// Icons are 18 art pixels square, shown at a whole-number zoom.
 function iconCanvas(abilityId, size = 40, accent) {
   const node = document.createElement('canvas');
-  node.width = node.height = size * 2;
-  node.style.width = node.style.height = `${size}px`;
-  if (abilityId) paintAbilityIcon(node, abilityId, accent || '#ffd267');
+  node.width = node.height = 18;
+  const shown = Math.max(18, Math.round(size / 18) * 18);
+  node.style.width = node.style.height = `${shown}px`;
+  node.style.imageRendering = 'pixelated';
+  if (abilityId) paintAbilityIcon(node, abilityId, accent || '#f0c040');
   return node;
 }
 
@@ -590,7 +593,7 @@ function renderDraft() {
       slot.dataset.slot = String(i + 1);
       slot.title = `${id ? SELECTABLE_ABILITIES.find(ability => ability.id === id)?.name || id : 'Empty'} — slot ${i + 1}`;
       slot.setAttribute('aria-pressed', String(row.slot === i));
-      slot.appendChild(iconCanvas(id, 30, '#ffd267'));
+      slot.appendChild(iconCanvas(id, 30, '#f0c040'));
       slot.addEventListener('click', () => { row.slot = i; renderDraft(); });
       held.appendChild(slot);
     }
@@ -619,7 +622,7 @@ function renderDraft() {
       card.dataset.family = ability.family;
       card.disabled = row.picked;
       card.setAttribute('aria-pressed', String(row.held[row.slot] === id));
-      card.appendChild(iconCanvas(id, 34, '#ffd267'));
+      card.appendChild(iconCanvas(id, 34, '#f0c040'));
       const name = document.createElement('div');
       name.className = 'name';
       name.textContent = ability.name;
@@ -1141,7 +1144,7 @@ function buildSlots() {
     slot.className = 'slot' + (abilities[i] ? '' : ' empty');
     slot.dataset.slot = String(i);
     slot.dataset.ability = abilities[i] || '';
-    if (abilities[i]) slot.appendChild(iconCanvas(abilities[i], 44, '#ffd267'));
+    if (abilities[i]) slot.appendChild(iconCanvas(abilities[i], 44, '#f0c040'));
     const cool = document.createElement('div');
     cool.className = 'cool';
     const charge = document.createElement('div');
@@ -1235,7 +1238,7 @@ function updateHud() {
     const charge = node.querySelector('.charge');
     if ((node.dataset.ability || '') !== (slot?.id || '')) {
       node.querySelector('canvas')?.remove();
-      if (slot?.id) node.prepend(iconCanvas(slot.id, 44, '#ffd267'));
+      if (slot?.id) node.prepend(iconCanvas(slot.id, 44, '#f0c040'));
       node.dataset.ability = slot?.id || '';
       node.classList.toggle('empty', !slot?.id);
     }
@@ -1399,6 +1402,11 @@ function frame(now) {
       localPid: G.you, time: now / 1000, showNames: false, colorOf: () => 0,
       poseOf: body => renderPose(body, now, poseTime, G.renderAlpha),
     });
+  } else {
+    // The menus sit over an empty Meadow, so the first thing on screen is the
+    // same pixel world the game is played in.
+    if (!G.backdrop) G.backdrop = createWorld({ seed: 7, mapIndex: 0, players: [] });
+    renderer.draw(G.backdrop, { localPid: -1, time: now / 1000, showNames: false, colorOf: () => 0 });
   }
 }
 
@@ -1407,31 +1415,7 @@ function frame(now) {
 const brandCanvas = $('brand-bopl');
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 function paintBrand(t) {
-  const ctx = brandCanvas.getContext('2d');
-  const size = brandCanvas.width;
-  ctx.clearRect(0, 0, size, size);
-  ctx.save();
-  ctx.translate(size / 2, size / 2);
-  const scale = size / 3.1;
-  ctx.scale(scale, scale);
-  ctx.fillStyle = '#7a4d31';
-  ctx.strokeStyle = '#29222f';
-  ctx.lineWidth = 0.1;
-  renderer.capsulePath(ctx, 0, 1.28, 0.82, 0.22, 0);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = '#69c74b';
-  renderer.capsulePath(ctx, 0, 1.16, 0.82, 0.12, 0);
-  ctx.fill();
-  ctx.stroke();
-  const bob = reduceMotion.matches ? 0 : Math.sin(t * 1.7) * 0.06;
-  renderer.drawBopl(ctx, {
-    x: 0, y: bob, r: 1, color: COLORS[0],
-    stretch: reduceMotion.matches ? 0 : Math.max(0, Math.sin(t * 1.7) * 0.18),
-    aimx: Math.cos(t * 0.6), aimy: Math.sin(t * 0.9) * 0.4,
-    blink: Math.sin(t * 1.1) > 0.986 ? 1 : 0,
-  });
-  ctx.restore();
+  paintBrandScene(brandCanvas, t, reduceMotion.matches);
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,6 +1486,7 @@ window.BOP = {
   state: () => ({
     screen: G.screen, mode: G.mode, round: G.round, you: G.you,
     phase: G.world?.phase, tick: G.world?.tick, bodies: G.world?.bodies.length,
+    scale: renderer.lastScale,
     alive: G.world?.players.filter(p => p.alive).length,
     players: G.world?.players.map(p => {
       const pose = renderPose(p, performance.now());
